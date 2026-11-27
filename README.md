@@ -63,9 +63,9 @@ Ready-to-install APKs are on the [Releases page](https://github.com/codemew/Blue
 - **Cutting a release**:
   1. Bump `versionCode` and `versionName` in `app/build.gradle.kts`.
   2. Add `.github/release-notes/vX.Y.Z.md`.
-  3. Push a `vX.Y.Z` tag.
+  3. Push. You can also push a `vX.Y.Z` tag, or start the workflow from the Actions tab.
 
-  The [release workflow](.github/workflows/release.yml) runs the tests, builds and signs the APK, and publishes it with a `SHA256SUMS.txt`. Releases are marked *pre-release* while `PRERELEASE` in that workflow is `"true"`.
+  If release `vX.Y.Z` doesn't exist yet, the [release workflow](.github/workflows/release.yml) runs the tests, builds and signs the APK, creates the tag and publishes the release with a `SHA256SUMS.txt`. Releases are marked *pre-release* while `PRERELEASE` in that workflow is `"true"`.
 
 ## Testing on two phones
 
