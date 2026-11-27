@@ -48,12 +48,24 @@ Requirements: JDK 17+, Android SDK Platform **37.1**, NDK **29.0.14206865**, CMa
 ./gradlew testDebugUnitTest      # JVM unit tests (protocol, jitter buffer, state machine, settings)
 ./gradlew lintDebug
 ./gradlew connectedDebugAndroidTest   # on a connected phone: native Opus/RNNoise smoke test
-./gradlew assembleRelease        # R8-minified (sign with your own key)
+./gradlew assembleRelease        # R8-minified, signed: app/build/outputs/apk/release/app-release.apk
 ```
 
 Install the APK on **two** phones, open BlueCall on both, and grant **Nearby devices**, **Microphone** and **Notifications**.
 
 The native audio libraries are vendored in `app/src/main/cpp/third_party/`. See [VENDORED.md](app/src/main/cpp/third_party/VENDORED.md) for versions, checksums and what was trimmed.
+
+## Releases
+
+Ready-to-install APKs are on the [Releases page](https://github.com/codemew/BlueCall/releases).
+
+- **Signing**: release builds are signed with a **public test key** (`app/signing/bluecall-test.jks`), so each new build installs over the previous one. It's fine for personal testing, not for wide distribution. To sign with your own private key instead, see [app/signing/README.md](app/signing/README.md).
+- **Cutting a release**:
+  1. Bump `versionCode` and `versionName` in `app/build.gradle.kts`.
+  2. Add `.github/release-notes/vX.Y.Z.md`.
+  3. Push a `vX.Y.Z` tag.
+
+  The [release workflow](.github/workflows/release.yml) runs the tests, builds and signs the APK, and publishes it with a `SHA256SUMS.txt`. Releases are marked *pre-release* while `PRERELEASE` in that workflow is `"true"`.
 
 ## Testing on two phones
 

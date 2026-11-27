@@ -33,3 +33,6 @@ google-services.json
 
 # Android Profiling
 *.hprof
+
+# Public test signing key for BlueCall release builds (see app/signing/README.md)
+!app/signing/bluecall-test.jks
