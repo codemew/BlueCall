@@ -2,8 +2,10 @@ package com.codemew.bluecall
 
 import android.content.Context
 import android.content.Intent
+import android.graphics.Color as AndroidColor
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.getValue
@@ -34,7 +36,9 @@ class CallActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         setShowWhenLocked(true)
         setTurnScreenOn(true)
-        enableEdgeToEdge()
+        // The call screen is always dark glass over vivid liquid colours: keep bar icons light.
+        val transparent = AndroidColor.TRANSPARENT
+        enableEdgeToEdge(SystemBarStyle.dark(transparent), SystemBarStyle.dark(transparent))
 
         lifecycleScope.launch { BlueCall.exitEvents.collect { finishAndRemoveTask() } }
         lifecycleScope.launch {
@@ -52,10 +56,10 @@ class CallActivity : ComponentActivity() {
         handleIntent(intent)
 
         setContent {
-            BlueCallTheme {
+            val settings by settingsRepository.settings.collectAsStateWithLifecycle(AppSettings())
+            BlueCallTheme(settings.theme, forceDark = true) {
                 val state by BlueCall.callState.collectAsStateWithLifecycle()
                 val ui by BlueCall.callUi.collectAsStateWithLifecycle()
-                val settings by settingsRepository.settings.collectAsStateWithLifecycle(AppSettings())
                 val availability = remember { EffectAvailability.query() }
                 CallScreen(
                     state = state,

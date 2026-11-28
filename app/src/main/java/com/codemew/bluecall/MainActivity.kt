@@ -7,16 +7,26 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.graphics.Color as AndroidColor
 import android.os.Build
 import android.os.Bundle
 import android.os.Process
 import android.provider.Settings
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -24,12 +34,14 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.unit.IntOffset
 import androidx.core.content.ContextCompat
 import androidx.core.net.toUri
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
 import com.codemew.bluecall.audio.EffectAvailability
 import com.codemew.bluecall.audio.NativeAudio
+import com.codemew.bluecall.bluetooth.NearbyPeer
 import com.codemew.bluecall.call.CallState
 import com.codemew.bluecall.data.AppSettings
 import com.codemew.bluecall.data.SettingsRepository
@@ -37,13 +49,16 @@ import com.codemew.bluecall.power.PowerPolicy
 import com.codemew.bluecall.service.AppPermissions
 import com.codemew.bluecall.service.BlueCall
 import com.codemew.bluecall.service.BlueCallService
+import com.codemew.bluecall.service.PresenceState
 import com.codemew.bluecall.ui.HomeActions
 import com.codemew.bluecall.ui.HomeScreen
 import com.codemew.bluecall.ui.HomeUi
 import com.codemew.bluecall.ui.PermissionsScreen
 import com.codemew.bluecall.ui.SettingsActions
 import com.codemew.bluecall.ui.SettingsScreen
+import com.codemew.bluecall.ui.glass.GlassBackdrop
 import com.codemew.bluecall.ui.theme.BlueCallTheme
+import com.codemew.bluecall.ui.theme.LocalBlueCallLook
 import kotlinx.coroutines.launch
 
 /**
@@ -51,6 +66,11 @@ import kotlinx.coroutines.launch
  * BlueCall). The Exit button takes it fully offline and closes the app.
  */
 class MainActivity : ComponentActivity() {
+
+    private companion object {
+        /** Home and Settings drift slowly; the call screen flows at full speed. */
+        const val HOME_LIQUID_SPEED = 0.25f
+    }
 
     private val settingsRepository by lazy { SettingsRepository(applicationContext) }
 
@@ -73,7 +93,14 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         lifecycleScope.launch { BlueCall.exitEvents.collect { finishAndRemoveTask() } }
-        setContent { BlueCallTheme { MainContent() } }
+        setContent {
+            val settings by settingsRepository.settings.collectAsStateWithLifecycle(AppSettings())
+            BlueCallTheme(settings.theme) {
+                val dark = LocalBlueCallLook.current.dark
+                LaunchedEffect(dark) { applySystemBars(dark) }
+                GlassBackdrop(speed = HOME_LIQUID_SPEED) { MainContent(settings) }
+            }
+        }
     }
 
     override fun onStart() {
@@ -139,12 +166,24 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun openNotificationSettings() {
+        launch(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, packageName))
+    }
+
+    /** Status and navigation bar icons that stay readable over the chosen light or dark glass. */
+    private fun applySystemBars(dark: Boolean) {
+        val transparent = AndroidColor.TRANSPARENT
+        val style = if (dark) SystemBarStyle.dark(transparent) else SystemBarStyle.light(transparent, transparent)
+        enableEdgeToEdge(statusBarStyle = style, navigationBarStyle = style)
+    }
+
+    private enum class Screen { PERMISSIONS, HOME, SETTINGS }
+
     @Composable
-    private fun MainContent() {
+    private fun MainContent(settings: AppSettings) {
         val presence by BlueCall.presence.collectAsStateWithLifecycle()
         val peers by BlueCall.peers.collectAsStateWithLifecycle()
         val callState by BlueCall.callState.collectAsStateWithLifecycle()
-        val settings by settingsRepository.settings.collectAsStateWithLifecycle(AppSettings())
         var showSettings by rememberSaveable { mutableStateOf(false) }
         var askedPermissions by rememberSaveable { mutableStateOf(false) }
 
@@ -167,46 +206,98 @@ class MainActivity : ComponentActivity() {
             if (callState is CallState.Incoming) startActivity(CallActivity.intent(this@MainActivity, answer = false))
         }
 
-        if (!permissionsOk) {
-            val permanentlyDenied = askedPermissions && AppPermissions.required.any {
-                !AppPermissions.granted(this, it) && !shouldShowRequestPermissionRationale(it)
-            }
-            PermissionsScreen(
-                showOpenSettings = permanentlyDenied,
-                onContinue = { permissionLauncher.launch(AppPermissions.required + AppPermissions.optional) },
-                onOpenSettings = { launch(PowerPolicy.appDetailsIntent(this)) },
-            )
-            return
+        BackHandler(enabled = showSettings && permissionsOk) { showSettings = false }
+
+        val screen = when {
+            !permissionsOk -> Screen.PERMISSIONS
+            showSettings -> Screen.SETTINGS
+            else -> Screen.HOME
         }
+        AnimatedContent(
+            targetState = screen,
+            transitionSpec = {
+                val forward = targetState.ordinal > initialState.ordinal
+                val spec = spring<IntOffset>(dampingRatio = 0.9f, stiffness = Spring.StiffnessMediumLow)
+                (slideInHorizontally(spec) { w -> if (forward) w / 4 else -w / 4 } + fadeIn(spring(stiffness = Spring.StiffnessMediumLow)))
+                    .togetherWith(
+                        slideOutHorizontally(spec) { w -> if (forward) -w / 4 else w / 4 } +
+                            fadeOut(spring(stiffness = Spring.StiffnessMedium)),
+                    )
+            },
+            label = "screen",
+        ) { target ->
+            when (target) {
+                Screen.PERMISSIONS -> {
+                    val permanentlyDenied = askedPermissions && AppPermissions.required.any {
+                        !AppPermissions.granted(this@MainActivity, it) && !shouldShowRequestPermissionRationale(it)
+                    }
+                    PermissionsScreen(
+                        showOpenSettings = permanentlyDenied,
+                        onContinue = { permissionLauncher.launch(AppPermissions.required + AppPermissions.optional) },
+                        onOpenSettings = { launch(PowerPolicy.appDetailsIntent(this@MainActivity)) },
+                    )
+                }
 
-        BackHandler(enabled = showSettings) { showSettings = false }
-
-        if (showSettings) {
-            val availability = remember { EffectAvailability.query() }
-            val versionText = remember {
-                val opus = if (NativeAudio.ensureLoaded()) NativeAudio.opusVersion() else "Opus unavailable"
-                "BlueCall ${BuildConfig.VERSION_NAME} · $opus · RNNoise 0.1.1"
+                Screen.SETTINGS -> SettingsContent(settings, onBack = { showSettings = false })
+                Screen.HOME -> HomeContent(
+                    settings = settings,
+                    presence = presence,
+                    peers = peers,
+                    callState = callState,
+                    onOpenSettings = { showSettings = true },
+                    onEnableBluetooth = { bluetoothLauncher.launch(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE)) },
+                    onRequestNotifications = {
+                        if (!askedPermissions) permissionLauncher.launch(AppPermissions.optional) else openNotificationSettings()
+                    },
+                )
             }
-            SettingsScreen(
-                settings = settings,
-                deviceName = SettingsRepository.deviceName(this),
-                availability = availability,
-                batteryUnrestricted = batteryOk,
-                isSamsung = PowerPolicy.isSamsung,
-                versionText = versionText,
-                actions = SettingsActions(
-                    onBack = { showSettings = false },
-                    onName = { name -> lifecycleScope.launch { settingsRepository.setDisplayName(name) } },
-                    onNoise = { noise -> lifecycleScope.launch { settingsRepository.setNoise(noise) } },
-                    onUltraLowLatency = { on -> lifecycleScope.launch { settingsRepository.setUltraLowLatency(on) } },
-                    onAutoOffline = { minutes -> lifecycleScope.launch { settingsRepository.setAutoOfflineMinutes(minutes) } },
-                    onAllowBattery = { launch(PowerPolicy.requestIgnoreBatteryOptimizationsIntent(this)) },
-                    onSamsungBattery = { launch(PowerPolicy.samsungBatterySettingsIntent(this)) },
-                ),
-            )
-            return
         }
+    }
 
+    @Composable
+    private fun SettingsContent(settings: AppSettings, onBack: () -> Unit) {
+        val availability = remember { EffectAvailability.query() }
+        val versionText = remember {
+            val opus = if (NativeAudio.ensureLoaded()) NativeAudio.opusVersion() else "Opus unavailable"
+            "BlueCall ${BuildConfig.VERSION_NAME} · $opus · RNNoise 0.1.1"
+        }
+        fun save(block: suspend SettingsRepository.() -> Unit) {
+            lifecycleScope.launch { settingsRepository.block() }
+        }
+        SettingsScreen(
+            settings = settings,
+            deviceName = SettingsRepository.deviceName(this),
+            availability = availability,
+            batteryUnrestricted = batteryOk,
+            isSamsung = PowerPolicy.isSamsung,
+            versionText = versionText,
+            actions = SettingsActions(
+                onBack = onBack,
+                onName = { name -> save { setDisplayName(name) } },
+                onNoise = { noise -> save { setNoise(noise) } },
+                onUltraLowLatency = { on -> save { setUltraLowLatency(on) } },
+                onAutoOffline = { minutes -> save { setAutoOfflineMinutes(minutes) } },
+                onAllowBattery = { launch(PowerPolicy.requestIgnoreBatteryOptimizationsIntent(this)) },
+                onSamsungBattery = { launch(PowerPolicy.samsungBatterySettingsIntent(this)) },
+                onPalette = { id -> save { setThemePalette(id) } },
+                onThemeMode = { mode -> save { setThemeMode(mode) } },
+                onCustomHue = { hue -> save { setCustomHue(hue) } },
+                onGlassStyle = { style -> save { setGlassStyle(style) } },
+                onAnimatedBackgrounds = { on -> save { setAnimatedBackgrounds(on) } },
+            ),
+        )
+    }
+
+    @Composable
+    private fun HomeContent(
+        settings: AppSettings,
+        presence: PresenceState,
+        peers: List<NearbyPeer>,
+        callState: CallState,
+        onOpenSettings: () -> Unit,
+        onEnableBluetooth: () -> Unit,
+        onRequestNotifications: () -> Unit,
+    ) {
         HomeScreen(
             ui = HomeUi(
                 presence = presence,
@@ -227,19 +318,10 @@ class MainActivity : ComponentActivity() {
                         startActivity(CallActivity.intent(this, answer = false))
                     }
                 },
-                onOpenSettings = { showSettings = true },
+                onOpenSettings = onOpenSettings,
                 onExit = ::exitApp,
-                onEnableBluetooth = { bluetoothLauncher.launch(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE)) },
-                onAllowNotifications = {
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && !askedPermissions) {
-                        permissionLauncher.launch(AppPermissions.optional)
-                    } else {
-                        launch(
-                            Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
-                                .putExtra(Settings.EXTRA_APP_PACKAGE, packageName),
-                        )
-                    }
-                },
+                onEnableBluetooth = onEnableBluetooth,
+                onAllowNotifications = onRequestNotifications,
                 onAllowFullScreen = {
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
                         launch(

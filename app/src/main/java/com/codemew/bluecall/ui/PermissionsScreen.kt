@@ -11,58 +11,76 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.PhoneInTalk
 import androidx.compose.material.icons.filled.Sensors
-import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
+import com.codemew.bluecall.ui.glass.GlassButton
+import com.codemew.bluecall.ui.glass.GlassCard
+import com.codemew.bluecall.ui.glass.GlassSurface
 
 @Composable
 fun PermissionsScreen(showOpenSettings: Boolean, onContinue: () -> Unit, onOpenSettings: () -> Unit) {
-    Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-        Column(
-            Modifier
-                .safeDrawingPadding()
-                .padding(24.dp),
-            verticalArrangement = Arrangement.spacedBy(20.dp),
-        ) {
-            Spacer(Modifier.height(24.dp))
+    Column(
+        Modifier
+            .fillMaxSize()
+            .safeDrawingPadding()
+            .verticalScroll(rememberScrollState())
+            .padding(20.dp),
+        verticalArrangement = Arrangement.spacedBy(18.dp),
+    ) {
+        Spacer(Modifier.height(16.dp))
+        GlassSurface(Modifier.size(84.dp), shape = CircleShape) {
             Icon(
                 Icons.Filled.PhoneInTalk,
                 contentDescription = null,
                 tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(56.dp),
+                modifier = Modifier.size(40.dp).align(Alignment.Center),
             )
-            Text("Call nearby phones over Bluetooth", style = MaterialTheme.typography.headlineSmall)
-            Text(
-                "No internet, no SIM, no pairing. BlueCall needs a few permissions first:",
-                style = MaterialTheme.typography.bodyLarge,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Reason(Icons.Filled.Sensors, "Nearby devices", "To find, be found by and connect to phones with BlueCall open. Your location is never used.")
-            Reason(Icons.Filled.Mic, "Microphone", "For your voice during calls. Only used while a call is in progress.")
-            Reason(Icons.Filled.Notifications, "Notifications", "To ring for incoming calls and show call status on the lock screen.")
-            Spacer(Modifier.weight(1f))
-            if (showOpenSettings) {
-                Text(
-                    "Some permissions were denied. Turn them on in BlueCall's app settings.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.error,
+        }
+        Text("Call nearby phones over Bluetooth", style = MaterialTheme.typography.headlineSmall)
+        Text(
+            "No internet, no SIM, no pairing. BlueCall needs a few permissions first:",
+            style = MaterialTheme.typography.bodyLarge,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        GlassCard {
+            Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                Reason(
+                    Icons.Filled.Sensors,
+                    "Nearby devices",
+                    "To find, be found by and connect to phones with BlueCall open. Your location is never used.",
                 )
-                OutlinedButton(onClick = onOpenSettings, modifier = Modifier.fillMaxWidth()) { Text("Open app settings") }
+                Reason(Icons.Filled.Mic, "Microphone", "For your voice during calls. Only used while a call is in progress.")
+                Reason(
+                    Icons.Filled.Notifications,
+                    "Notifications",
+                    "To ring for incoming calls and show call status on the lock screen.",
+                )
             }
-            Button(onClick = onContinue, modifier = Modifier.fillMaxWidth().height(52.dp)) { Text("Continue") }
+        }
+        if (showOpenSettings) {
+            Text(
+                "Some permissions were denied. Turn them on in BlueCall's app settings.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.error,
+            )
+            GlassButton(onClick = onOpenSettings, modifier = Modifier.fillMaxWidth()) { Text("Open app settings") }
+        }
+        GlassButton(onClick = onContinue, modifier = Modifier.fillMaxWidth(), tint = MaterialTheme.colorScheme.primary) {
+            Text("Continue", style = MaterialTheme.typography.titleMedium)
         }
     }
 }

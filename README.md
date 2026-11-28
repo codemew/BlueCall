@@ -26,13 +26,19 @@ Built for Samsung Galaxy phones on Android 12 or newer, and works on any Android
 - **Incoming calls**: ring through your normal ringtone (respects silent mode and Do Not Disturb). The full-screen call screen opens over the lock screen.
 - **Audio output**: earpiece (screen turns off at your ear), speaker, Bluetooth headset or wired headset.
 - **Interruptions**: a regular phone call automatically puts the BlueCall call on hold.
+- **Appearance**:
+  - Frosted-glass cards and buttons with real background blur, over flowing liquid colours. The call screen flows at full speed and full resolution; Home and Settings drift slowly.
+  - Smooth spring animations for presses, screen changes, list updates and call controls. Halos pulse around the avatar while ringing.
+  - 14 colour themes: your phone's own colours, 12 presets (Ocean, Aurora, Sunset, Lavender, Rose, Forest, Mint, Citrus, Ember, Coral, Midnight, Graphite) and a custom colour from any hue.
+  - Light, dark or system mode, and Clear, Frosted or Solid glass (Solid turns blur off for maximum readability).
+  - "Animated backgrounds" can be switched off in Settings. Motion also pauses automatically in Battery Saver and when system animations are off.
 
 ## Battery behaviour
 
 | BlueCall is… | What runs |
 |---|---|
 | **Exited** (Exit button, swiped from Recents, or auto-offline) | **Nothing.** The process is ended. There's no boot receiver, no scheduled jobs or alarms, no push messages and no sticky service, so nothing can start BlueCall except you opening it. |
-| **Open, on screen** | A foreground service, Bluetooth LE advertising (balanced), and scanning with a filter the hardware applies. |
+| **Open, on screen** | A foreground service, Bluetooth LE advertising (balanced), and scanning with a filter the hardware applies. The liquid background animates at up to 60 Hz while a BlueCall screen is visible (paused in Battery Saver or if turned off). |
 | **Open, locked or in background** | Low-power advertising only (about one packet burst per second, done by the Bluetooth chip). No scanning, no wakelocks, no timers. Incoming calls still get through. |
 | **In a call** | Audio, the Bluetooth link at high priority, a partial wakelock, and the proximity screen-off lock on the earpiece. All are released when the call ends. |
 
@@ -48,12 +54,24 @@ Requirements: JDK 17+, Android SDK Platform **37.1**, NDK **29.0.14206865**, CMa
 ./gradlew testDebugUnitTest      # JVM unit tests (protocol, jitter buffer, state machine, settings)
 ./gradlew lintDebug
 ./gradlew connectedDebugAndroidTest   # on a connected phone: native Opus/RNNoise smoke test
-./gradlew assembleRelease        # R8-minified (sign with your own key)
+./gradlew assembleRelease        # R8-minified, signed: app/build/outputs/apk/release/app-release.apk
 ```
 
 Install the APK on **two** phones, open BlueCall on both, and grant **Nearby devices**, **Microphone** and **Notifications**.
 
 The native audio libraries are vendored in `app/src/main/cpp/third_party/`. See [VENDORED.md](app/src/main/cpp/third_party/VENDORED.md) for versions, checksums and what was trimmed.
+
+## Releases
+
+Ready-to-install APKs are on the [Releases page](https://github.com/codemew/BlueCall/releases).
+
+- **Signing**: release builds are signed with a **public test key** (`app/signing/bluecall-test.jks`), so each new build installs over the previous one. It's fine for personal testing, not for wide distribution. To sign with your own private key instead, see [app/signing/README.md](app/signing/README.md).
+- **Cutting a release**:
+  1. Bump `versionCode` and `versionName` in `app/build.gradle.kts`.
+  2. Add `.github/release-notes/vX.Y.Z.md`.
+  3. Push. You can also push a `vX.Y.Z` tag, or start the workflow from the Actions tab.
+
+  If release `vX.Y.Z` doesn't exist yet, the [release workflow](.github/workflows/release.yml) runs the tests, builds and signs the APK, creates the tag and publishes the release with a `SHA256SUMS.txt`. Releases are marked *pre-release* while `PRERELEASE` in that workflow is `"true"`.
 
 ## Testing on two phones
 

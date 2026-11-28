@@ -16,8 +16,8 @@ android {
         applicationId = "com.codemew.bluecall"
         minSdk = 31
         targetSdk = 36
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = 2
+        versionName = "1.1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -39,8 +39,28 @@ android {
         }
     }
 
+    signingConfigs {
+        create("release") {
+            // A private key can be supplied through these environment variables (e.g. CI secrets).
+            // Without them, release builds use the public test key in app/signing (testing only).
+            val keystore = System.getenv("BLUECALL_KEYSTORE")
+            if (!keystore.isNullOrBlank()) {
+                storeFile = file(keystore)
+                storePassword = System.getenv("BLUECALL_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("BLUECALL_KEY_ALIAS")
+                keyPassword = System.getenv("BLUECALL_KEY_PASSWORD")
+            } else {
+                storeFile = file("signing/bluecall-test.jks")
+                storePassword = "bluecall-test"
+                keyAlias = "bluecall-test"
+                keyPassword = "bluecall-test"
+            }
+        }
+    }
+
     buildTypes {
         release {
+            signingConfig = signingConfigs.getByName("release")
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(
@@ -81,6 +101,8 @@ dependencies {
     implementation(libs.androidx.compose.material3)
     implementation(libs.androidx.compose.material.icons.extended)
     implementation(libs.androidx.datastore.preferences)
+    implementation(libs.haze)
+    implementation(libs.haze.blur)
     implementation(libs.kotlinx.coroutines.android)
     debugImplementation(libs.androidx.compose.ui.tooling)
 
