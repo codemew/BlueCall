@@ -8,6 +8,10 @@
     <uses-feature
         android:name="android.hardware.microphone"
         android:required="true" />
+    <!-- Wi-Fi calls use Wi-Fi Aware where the phone has it; Bluetooth calls work without. -->
+    <uses-feature
+        android:name="android.hardware.wifi.aware"
+        android:required="false" />
 
     <!-- Nearby devices: find, be found by, and connect to other phones running BlueCall. -->
     <uses-permission
@@ -16,9 +20,33 @@
     <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
 
+    <!--
+        Wi-Fi calls: find and connect to nearby phones over Wi-Fi Aware (phone to phone, no router).
+        Android 13+ asks for this as part of "Nearby devices"; Android 12 needs Location for it.
+        INTERNET is required by Android for any socket, including this phone-to-phone link,
+        which has no internet access.
+    -->
+    <uses-permission
+        android:name="android.permission.NEARBY_WIFI_DEVICES"
+        android:usesPermissionFlags="neverForLocation"
+        tools:targetApi="33" />
+    <uses-permission
+        android:name="android.permission.ACCESS_FINE_LOCATION"
+        android:maxSdkVersion="32" />
+    <uses-permission
+        android:name="android.permission.ACCESS_COARSE_LOCATION"
+        android:maxSdkVersion="32" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.INTERNET" />
+
     <!-- Calls -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <!-- Registers BlueCall calls with Android's calling system (earphones, car kits, watches). -->
+    <uses-permission android:name="android.permission.MANAGE_OWN_CALLS" />
 
     <!-- Staying reachable while the phone is locked, only while BlueCall is open. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
@@ -80,5 +108,16 @@
         <receiver
             android:name=".service.NotificationActionReceiver"
             android:exported="false" />
+
+        <!--
+            From the Jetpack Telecom library: it echoes the global microphone-mute broadcast on
+            Android 13 and older. That broadcast only reaches registered receivers, so this one
+            could never run; removing it guarantees nothing can start BlueCall through it.
+            (The library's ConnectionService stays: only the system's calling service can bind
+            it, and only while BlueCall has a call registered.)
+        -->
+        <receiver
+            android:name="androidx.core.telecom.internal.MuteStateReceiver"
+            tools:node="remove" />
     </application>
 </manifest>

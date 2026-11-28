@@ -55,6 +55,10 @@ class SettingsRepository(context: Context) {
 
     suspend fun setAnimatedBackgrounds(enabled: Boolean) = edit { it[SettingsKeys.THEME_ANIMATED] = enabled }
 
+    suspend fun setWifiCalling(enabled: Boolean) = edit { it[SettingsKeys.WIFI_CALLING] = enabled }
+
+    suspend fun setSystemCalling(enabled: Boolean) = edit { it[SettingsKeys.SYSTEM_CALLING] = enabled }
+
     suspend fun setBatteryCardDismissed(dismissed: Boolean) =
         edit { it[SettingsKeys.BATTERY_CARD_DISMISSED] = dismissed }
 

@@ -54,7 +54,14 @@ class CallStateMachineTest {
         t = reduce(t.state, CallEvent.LocalHangup)
         assertEquals(CallState.Idle(CallEnd(peer, EndReason.HUNG_UP, now)), t.state)
         assertEquals(
-            listOf(CallEffect.SendHangup, StopAudio, CloseSession, ReleaseCallLocks, ResumePresence),
+            listOf(
+                CallEffect.SendHangup,
+                StopAudio,
+                CloseSession,
+                CallEffect.EndSystemCall(EndReason.HUNG_UP),
+                ReleaseCallLocks,
+                ResumePresence,
+            ),
             t.effects,
         )
     }
@@ -67,7 +74,13 @@ class CallStateMachineTest {
         t = reduce(t.state, CallEvent.Answer)
         assertEquals(CallState.Active(peer, now), t.state)
         assertEquals(
-            listOf(CallEffect.StopIncomingRing, CallEffect.CancelRingTimeout, CallEffect.SendAccept, StartAudio),
+            listOf(
+                CallEffect.StopIncomingRing,
+                CallEffect.CancelRingTimeout,
+                CallEffect.SendAccept,
+                CallEffect.SetSystemCallActive,
+                StartAudio,
+            ),
             t.effects,
         )
     }
@@ -184,5 +197,77 @@ class CallStateMachineTest {
         val t = reduce(active, CallEvent.IncomingCall(PeerInfo(1, "Other")))
         assertEquals(active, t.state)
         assertTrue(t.effects.isEmpty())
+    }
+
+    private val callEnds = listOf(
+        CallState.Dialing(peer) to CallEvent.DialFailed,
+        CallState.Dialing(peer) to CallEvent.LocalHangup,
+        CallState.Dialing(peer) to CallEvent.RingTimeout,
+        CallState.Dialing(peer) to CallEvent.LinkLost,
+        CallState.Dialing(peer) to CallEvent.RemoteRejected(true),
+        CallState.Ringing(peer) to CallEvent.LocalHangup,
+        CallState.Ringing(peer) to CallEvent.RingTimeout,
+        CallState.Ringing(peer) to CallEvent.RemoteHangup,
+        CallState.Ringing(peer) to CallEvent.LinkLost,
+        CallState.Ringing(peer) to CallEvent.RemoteRejected(true),
+        CallState.Incoming(peer) to CallEvent.Decline,
+        CallState.Incoming(peer) to CallEvent.RingTimeout,
+        CallState.Incoming(peer) to CallEvent.RemoteHangup,
+        CallState.Active(peer, 0) to CallEvent.LocalHangup,
+        CallState.Active(peer, 0) to CallEvent.RemoteHangup,
+        CallState.Active(peer, 0) to CallEvent.LinkLost,
+    )
+
+    @Test
+    fun everyCallStartAddsExactlyOneSystemCall() {
+        val dial = reduce(CallState.Idle(), CallEvent.Dial(peer))
+        assertEquals(listOf(CallEffect.AddSystemCall(incoming = false)), dial.effects.filterIsInstance<CallEffect.AddSystemCall>())
+        val incoming = reduce(CallState.Idle(), CallEvent.IncomingCall(peer))
+        assertEquals(listOf(CallEffect.AddSystemCall(incoming = true)), incoming.effects.filterIsInstance<CallEffect.AddSystemCall>())
+        // The system call is registered before ringing starts, so earphones can answer it.
+        assertTrue(
+            incoming.effects.indexOf(CallEffect.AddSystemCall(true)) < incoming.effects.indexOf(CallEffect.StartIncomingRing),
+        )
+    }
+
+    @Test
+    fun connectingMarksTheSystemCallActive() {
+        val accepted = reduce(CallState.Ringing(peer), CallEvent.RemoteAccepted)
+        assertEquals(1, accepted.effects.count { it == CallEffect.SetSystemCallActive })
+        val answered = reduce(CallState.Incoming(peer), CallEvent.Answer)
+        assertEquals(1, answered.effects.count { it == CallEffect.SetSystemCallActive })
+    }
+
+    @Test
+    fun everyCallEndEndsTheSystemCallExactlyOnce() {
+        for ((state, event) in callEnds) {
+            val t = reduce(state, event)
+            val ends = t.effects.filterIsInstance<CallEffect.EndSystemCall>()
+            assertEquals("$state + $event", 1, ends.size)
+            assertEquals("$state + $event reason", (t.state as CallState.Idle).lastEnd?.reason, ends.single().reason)
+        }
+        for (state in allStates) {
+            val t = reduce(state, CallEvent.Shutdown)
+            val expected = if (state.isCallInProgress) 1 else 0
+            assertEquals("shutdown from $state", expected, t.effects.count { it is CallEffect.EndSystemCall })
+        }
+    }
+
+    @Test
+    fun transportIsCarriedThroughTheCall() {
+        val wifiPeer = PeerInfo(5, "Sam", Transport.WIFI)
+        var t = reduce(CallState.Idle(), CallEvent.Dial(wifiPeer))
+        assertTrue(t.effects.contains(CallEffect.Connect(wifiPeer)))
+        t = reduce(t.state, CallEvent.DialConnected)
+        t = reduce(t.state, CallEvent.RemoteAccepted)
+        assertEquals(Transport.WIFI, (t.state as CallState.Active).peer.transport)
+    }
+
+    @Test
+    fun busyAnswerWhileStillConnectingEndsAsBusy() {
+        val t = reduce(CallState.Dialing(peer), CallEvent.RemoteRejected(busy = true))
+        assertEquals(EndReason.BUSY, (t.state as CallState.Idle).lastEnd?.reason)
+        assertTrue(t.effects.contains(CloseSession))
+        assertFalse(t.effects.contains(CallEffect.SendHangup))
     }
 }

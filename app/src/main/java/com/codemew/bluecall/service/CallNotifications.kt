@@ -17,6 +17,7 @@ import com.codemew.bluecall.CallActivity
 import com.codemew.bluecall.MainActivity
 import com.codemew.bluecall.R
 import com.codemew.bluecall.call.PeerInfo
+import com.codemew.bluecall.call.Transport
 
 /**
  * All of BlueCall's notifications.
@@ -58,20 +59,35 @@ class CallNotifications(private val context: Context) {
             .setStyle(NotificationCompat.CallStyle.forOngoingCall(person(peer), action(ACTION_HANGUP, 2)))
             .build()
 
-    fun ongoing(peer: PeerInfo, connectedAtMs: Long, muted: Boolean, speakerOn: Boolean, onHold: Boolean): Notification =
+    fun ongoing(
+        peer: PeerInfo,
+        connectedAtMs: Long,
+        muted: Boolean,
+        speakerOn: Boolean,
+        onHold: Boolean,
+        canResume: Boolean,
+    ): Notification =
         callBuilder(peer)
-            .setContentText(context.getString(if (onHold) R.string.notif_on_hold else R.string.notif_in_call))
+            .setContentText(
+                if (onHold) context.getString(R.string.notif_on_hold) else context.getString(R.string.notif_in_call, transportName(peer)),
+            )
             .setStyle(NotificationCompat.CallStyle.forOngoingCall(person(peer), action(ACTION_HANGUP, 2)))
             .addAction(
                 0,
                 context.getString(if (muted) R.string.notif_unmute else R.string.notif_mute),
                 action(ACTION_TOGGLE_MUTE, 3),
             )
-            .addAction(
-                0,
-                context.getString(if (speakerOn) R.string.notif_earpiece else R.string.notif_speaker),
-                action(ACTION_TOGGLE_SPEAKER, 4),
-            )
+            .apply {
+                if (canResume) {
+                    addAction(0, context.getString(R.string.notif_resume), action(ACTION_RESUME, 5))
+                } else {
+                    addAction(
+                        0,
+                        context.getString(if (speakerOn) R.string.notif_earpiece else R.string.notif_speaker),
+                        action(ACTION_TOGGLE_SPEAKER, 4),
+                    )
+                }
+            }
             .setUsesChronometer(true)
             .setShowWhen(true)
             .setWhen(connectedAtMs)
@@ -99,7 +115,7 @@ class CallNotifications(private val context: Context) {
         val notification = NotificationCompat.Builder(context, CH_INCOMING)
             .setSmallIcon(R.drawable.ic_stat_bluecall)
             .setContentTitle(peer.name)
-            .setContentText(context.getString(R.string.notif_incoming_text))
+            .setContentText(context.getString(R.string.notif_incoming_text, transportName(peer)))
             .setStyle(
                 NotificationCompat.CallStyle.forIncomingCall(
                     person(peer),
@@ -162,6 +178,10 @@ class CallNotifications(private val context: Context) {
         if (!AppPermissions.canPostNotifications(context)) return
         manager.notify(ID_SERVICE, notification)
     }
+
+    private fun transportName(peer: PeerInfo) = context.getString(
+        if (peer.transport == Transport.WIFI) R.string.transport_wifi else R.string.transport_bluetooth,
+    )
 
     private fun person(peer: PeerInfo) = Person.Builder().setName(peer.name).setImportant(true).build()
 
@@ -234,5 +254,6 @@ class CallNotifications(private val context: Context) {
         const val ACTION_HANGUP = "com.codemew.bluecall.action.HANGUP"
         const val ACTION_TOGGLE_MUTE = "com.codemew.bluecall.action.TOGGLE_MUTE"
         const val ACTION_TOGGLE_SPEAKER = "com.codemew.bluecall.action.TOGGLE_SPEAKER"
+        const val ACTION_RESUME = "com.codemew.bluecall.action.RESUME"
     }
 }

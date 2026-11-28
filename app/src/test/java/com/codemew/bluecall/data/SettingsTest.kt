@@ -99,4 +99,21 @@ class SettingsTest {
     fun ultraLowLatencyUsesTenMillisecondFrames() {
         assertEquals(10, AppSettings(ultraLowLatency = true).frameMs)
     }
+
+    @Test
+    fun wifiAndSystemCallingAreOnByDefault() {
+        val s = emptyPreferences().toAppSettings()
+        assertTrue(s.wifiCalling)
+        assertTrue(s.systemCalling)
+    }
+
+    @Test
+    fun wifiAndSystemCallingCanBeTurnedOffSeparately() {
+        val noWifi = mutablePreferencesOf(SettingsKeys.WIFI_CALLING to false).toAppSettings()
+        assertFalse(noWifi.wifiCalling)
+        assertTrue(noWifi.systemCalling)
+        val noSystem = mutablePreferencesOf(SettingsKeys.SYSTEM_CALLING to false).toAppSettings()
+        assertTrue(noSystem.wifiCalling)
+        assertFalse(noSystem.systemCalling)
+    }
 }

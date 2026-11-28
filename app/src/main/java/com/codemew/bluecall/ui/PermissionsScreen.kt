@@ -50,7 +50,7 @@ fun PermissionsScreen(showOpenSettings: Boolean, onContinue: () -> Unit, onOpenS
                 modifier = Modifier.size(40.dp).align(Alignment.Center),
             )
         }
-        Text("Call nearby phones over Bluetooth", style = MaterialTheme.typography.headlineSmall)
+        Text("Call nearby phones over Bluetooth or Wi-Fi", style = MaterialTheme.typography.headlineSmall)
         Text(
             "No internet, no SIM, no pairing. BlueCall needs a few permissions first:",
             style = MaterialTheme.typography.bodyLarge,
@@ -61,7 +61,7 @@ fun PermissionsScreen(showOpenSettings: Boolean, onContinue: () -> Unit, onOpenS
                 Reason(
                     Icons.Filled.Sensors,
                     "Nearby devices",
-                    "To find, be found by and connect to phones with BlueCall open. Your location is never used.",
+                    "To find, be found by and connect to phones with BlueCall open, over Bluetooth and direct Wi-Fi. Your location is never used.",
                 )
                 Reason(Icons.Filled.Mic, "Microphone", "For your voice during calls. Only used while a call is in progress.")
                 Reason(

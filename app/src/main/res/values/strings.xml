@@ -14,11 +14,14 @@
     <string name="notif_online_title">BlueCall is on</string>
     <string name="notif_online_text">Visible to nearby phones as %1$s</string>
     <string name="notif_go_offline">Go offline</string>
-    <string name="notif_incoming_text">Incoming BlueCall · Bluetooth</string>
+    <string name="notif_incoming_text">Incoming BlueCall · %1$s</string>
     <string name="notif_calling">Calling…</string>
     <string name="notif_ringing">Ringing…</string>
-    <string name="notif_in_call">BlueCall · Bluetooth</string>
+    <string name="notif_in_call">BlueCall · %1$s</string>
     <string name="notif_on_hold">On hold</string>
+    <string name="notif_resume">Resume</string>
+    <string name="transport_bluetooth">Bluetooth</string>
+    <string name="transport_wifi">Wi-Fi</string>
     <string name="notif_mute">Mute</string>
     <string name="notif_unmute">Unmute</string>
     <string name="notif_speaker">Speaker</string>

@@ -44,6 +44,10 @@ data class AppSettings(
     val autoOfflineMinutes: Int = DEFAULT_AUTO_OFFLINE_MINUTES,
     val batteryCardDismissed: Boolean = false,
     val theme: ThemeSettings = ThemeSettings(),
+    /** Phone-to-phone Wi-Fi (Wi-Fi Aware) calls, on phones that support it. */
+    val wifiCalling: Boolean = true,
+    /** Register calls with Android's calling system (earphones, car kits, watches). */
+    val systemCalling: Boolean = true,
 ) {
     /** Opus frame duration: 10 ms for lowest latency, 20 ms for the best battery/latency balance. */
     val frameMs: Int get() = if (ultraLowLatency) 10 else 20
@@ -70,6 +74,8 @@ object SettingsKeys {
     val THEME_CUSTOM_HUE = floatPreferencesKey("theme_custom_hue")
     val THEME_GLASS = stringPreferencesKey("theme_glass")
     val THEME_ANIMATED = booleanPreferencesKey("theme_animated_backgrounds")
+    val WIFI_CALLING = booleanPreferencesKey("wifi_calling")
+    val SYSTEM_CALLING = booleanPreferencesKey("system_calling")
 }
 
 fun Preferences.toAppSettings(): AppSettings {
@@ -94,6 +100,8 @@ fun Preferences.toAppSettings(): AppSettings {
             glass = enumOrDefault(this[SettingsKeys.THEME_GLASS], GlassStyle.FROSTED),
             animatedBackgrounds = this[SettingsKeys.THEME_ANIMATED] ?: true,
         ),
+        wifiCalling = this[SettingsKeys.WIFI_CALLING] ?: defaults.wifiCalling,
+        systemCalling = this[SettingsKeys.SYSTEM_CALLING] ?: defaults.systemCalling,
     )
 }
 

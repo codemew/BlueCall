@@ -41,6 +41,8 @@ class AudioEngine(
     noise: NoiseSettings,
     private val sendPacket: (seq: Int, data: ByteArray, length: Int) -> Unit,
     private val onError: (String) -> Unit,
+    /** Opus bitrate: [BITRATE] over Bluetooth, [WIFI_BITRATE] over Wi-Fi, which has room to spare. */
+    private val bitrate: Int = BITRATE,
 ) {
     @Volatile
     var muted = false
@@ -77,7 +79,7 @@ class AudioEngine(
             return false
         }
         try {
-            encoder = NativeAudio.opusEncoderCreate(SAMPLE_RATE, BITRATE, COMPLEXITY, true)
+            encoder = NativeAudio.opusEncoderCreate(SAMPLE_RATE, bitrate, COMPLEXITY, true)
             decoder = NativeAudio.opusDecoderCreate(SAMPLE_RATE)
             processor = NativeAudio.processorCreate(SAMPLE_RATE, LOW_CUT_HZ)
             if (encoder == 0L || decoder == 0L || processor == 0L) throw IllegalStateException("codec init failed")
@@ -295,6 +297,7 @@ class AudioEngine(
     companion object {
         const val SAMPLE_RATE = 48_000
         const val BITRATE = 24_000
+        const val WIFI_BITRATE = 32_000
         const val COMPLEXITY = 5
         const val LOW_CUT_HZ = 100f
         private const val JOIN_TIMEOUT_MS = 500L

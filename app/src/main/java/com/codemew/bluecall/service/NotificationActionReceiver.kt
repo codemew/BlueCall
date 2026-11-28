@@ -6,7 +6,7 @@ import android.content.Intent
 import androidx.core.app.NotificationManagerCompat
 
 /**
- * Receives taps on notification buttons (decline, hang up, mute, speaker, go offline).
+ * Receives taps on notification buttons (decline, hang up, mute, speaker, resume, go offline).
  * Not exported and registered for no system broadcasts, so it only ever runs
  * because the user tapped something.
  */
@@ -27,6 +27,7 @@ class NotificationActionReceiver : BroadcastReceiver() {
             CallNotifications.ACTION_HANGUP -> controller.hangUp()
             CallNotifications.ACTION_TOGGLE_MUTE -> controller.toggleMute()
             CallNotifications.ACTION_TOGGLE_SPEAKER -> controller.toggleSpeaker()
+            CallNotifications.ACTION_RESUME -> controller.resume()
         }
     }
 }

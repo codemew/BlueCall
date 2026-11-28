@@ -1,7 +1,10 @@
 package com.codemew.bluecall.call
 
-/** The other phone in a call. [sessionId] is the random id it advertises while online. */
-data class PeerInfo(val sessionId: Int, val name: String)
+/**
+ * The other phone in a call. [sessionId] is the random id it advertises while
+ * online; [transport] is the radio this call uses.
+ */
+data class PeerInfo(val sessionId: Int, val name: String, val transport: Transport = Transport.BLUETOOTH)
 
 enum class EndReason {
     HUNG_UP,
@@ -25,7 +28,7 @@ sealed interface CallState {
     /** Online and reachable, no call. [lastEnd] lets the UI show how the previous call ended. */
     data class Idle(val lastEnd: CallEnd? = null) : CallState
 
-    /** Outgoing: opening the Bluetooth channel to the other phone. */
+    /** Outgoing: opening the channel to the other phone. */
     data class Dialing(val peer: PeerInfo) : CallState
 
     /** Outgoing: connected, the other phone is ringing. */

@@ -3,6 +3,8 @@ package com.codemew.bluecall.ui
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.Spring
@@ -48,6 +50,8 @@ import androidx.compose.material.icons.filled.Headset
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicOff
 import androidx.compose.material.icons.filled.PhoneAndroid
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -64,7 +68,10 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.codemew.bluecall.audio.EffectAvailability
+import com.codemew.bluecall.audio.AudioRoute
 import com.codemew.bluecall.audio.RouteType
+import com.codemew.bluecall.audio.isHeadset
+import com.codemew.bluecall.call.Transport
 import com.codemew.bluecall.call.CallState
 import com.codemew.bluecall.call.peer
 import com.codemew.bluecall.data.NoiseSettings
@@ -85,8 +92,9 @@ class CallActions(
     val onHangUp: () -> Unit,
     val onMute: () -> Unit,
     val onSpeaker: () -> Unit,
-    val onRoute: (RouteType) -> Unit,
+    val onRoute: (AudioRoute) -> Unit,
     val onNoise: (NoiseSettings) -> Unit,
+    val onResume: () -> Unit,
 )
 
 private enum class Panel { NONE, NOISE, ROUTES }
@@ -121,10 +129,18 @@ fun CallScreen(
         ) {
             Spacer(Modifier.height(20.dp))
             GlassSurface(shape = RoundedCornerShape(50)) {
+                val wifi = peer?.transport == Transport.WIFI
                 Row(Modifier.padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Filled.Bluetooth, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Icon(
+                        if (wifi) Icons.Filled.Wifi else Icons.Filled.Bluetooth,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp),
+                    )
                     Spacer(Modifier.width(6.dp))
-                    Text("BlueCall", style = MaterialTheme.typography.labelLarge)
+                    Text(
+                        if (peer == null) "BlueCall" else if (wifi) "BlueCall · Wi-Fi" else "BlueCall · Bluetooth",
+                        style = MaterialTheme.typography.labelLarge,
+                    )
                 }
             }
             Spacer(Modifier.height(36.dp))
@@ -137,6 +153,17 @@ fun CallScreen(
             )
             Spacer(Modifier.height(8.dp))
             StatusLine(state, ui)
+            AnimatedVisibility(ui.canResume && state is CallState.Active, enter = fadeIn() + expandVertically(), exit = fadeOut() + shrinkVertically()) {
+                GlassButton(
+                    onClick = actions.onResume,
+                    modifier = Modifier.padding(top = 14.dp),
+                    tint = CallGreen,
+                ) {
+                    Icon(Icons.Filled.PlayArrow, contentDescription = null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Resume call")
+                }
+            }
             Spacer(Modifier.weight(1f))
 
             val controls = when (state) {
@@ -178,10 +205,10 @@ fun CallScreen(
             Spacer(Modifier.height(12.dp))
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 ui.routes.forEach { route ->
-                    val selected = route.type == ui.route
+                    val selected = route.id == ui.route?.id
                     GlassButton(
                         onClick = {
-                            actions.onRoute(route.type)
+                            actions.onRoute(route)
                             panel = Panel.NONE
                         },
                         modifier = Modifier.fillMaxWidth(),
@@ -248,7 +275,7 @@ private fun StatusLine(state: CallState, ui: CallUiState) {
                         Text(details.joinToString(" · "), style = MaterialTheme.typography.bodySmall, color = muted)
                     }
                     val notes = buildList {
-                        if (ui.onHold) add("On hold. Another call is using audio")
+                        if (ui.onHold) add(if (ui.canResume) "On hold" else "On hold. Another call is using audio")
                         if (ui.peerOnHold) add("The other phone put you on hold")
                         if (ui.peerMuted) add("The other person is muted")
                         ui.error?.let { add(it) }
@@ -310,10 +337,10 @@ private fun InCallControls(
     onNoise: () -> Unit,
     onRoutes: () -> Unit,
 ) {
-    val hasExternal = ui.routes.any { it.type == RouteType.BLUETOOTH || it.type == RouteType.WIRED }
-    val routeLabel = when (ui.route) {
+    val hasExternal = ui.routes.any { it.type.isHeadset }
+    val routeLabel = when (ui.route?.type) {
         RouteType.SPEAKER -> "Speaker"
-        RouteType.BLUETOOTH -> ui.routes.firstOrNull { it.type == RouteType.BLUETOOTH }?.name ?: "Bluetooth"
+        RouteType.BLUETOOTH -> ui.route.name
         RouteType.WIRED -> "Headset"
         else -> if (hasExternal) "Phone" else "Speaker"
     }
@@ -327,9 +354,9 @@ private fun InCallControls(
                 enabled = active,
             )
             GlassToggleButton(
-                checked = ui.route == RouteType.SPEAKER,
+                checked = ui.route?.type == RouteType.SPEAKER,
                 onClick = { if (hasExternal) onRoutes() else actions.onSpeaker() },
-                icon = ui.route?.let(::routeIcon) ?: Icons.AutoMirrored.Filled.VolumeUp,
+                icon = ui.route?.type?.let(::routeIcon) ?: Icons.AutoMirrored.Filled.VolumeUp,
                 label = routeLabel,
             )
             GlassToggleButton(checked = false, onClick = onNoise, icon = Icons.Filled.GraphicEq, label = "Noise")

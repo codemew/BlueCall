@@ -74,6 +74,7 @@ class CallActivity : ComponentActivity() {
                         onSpeaker = { BlueCall.controller?.toggleSpeaker() },
                         onRoute = { BlueCall.controller?.selectRoute(it) },
                         onNoise = { noise -> lifecycleScope.launch { settingsRepository.setNoise(noise) } },
+                        onResume = { BlueCall.controller?.resume() },
                     ),
                 )
             }

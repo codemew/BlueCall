@@ -11,6 +11,7 @@ import android.os.Looper
 import android.os.ParcelUuid
 import android.os.SystemClock
 import android.util.Log
+import com.codemew.bluecall.call.PeerDirectory
 import com.codemew.bluecall.protocol.PROTOCOL_VERSION
 
 /**
@@ -27,11 +28,11 @@ import com.codemew.bluecall.protocol.PROTOCOL_VERSION
 class BleScanner(
     private val adapter: BluetoothAdapter,
     private val ownSessionId: Int,
-    private val onPeersChanged: (List<NearbyPeer>) -> Unit,
+    private val onPeersChanged: (List<BleSighting>) -> Unit,
     private val onFailure: (Int) -> Unit,
 ) {
     private val handler = Handler(Looper.getMainLooper())
-    private val peers = LinkedHashMap<Int, NearbyPeer>()
+    private val peers = LinkedHashMap<Int, BleSighting>()
     private val recentStarts = ArrayDeque<Long>()
     private var scanning = false
     private var wanted = false
@@ -111,7 +112,7 @@ class BleScanner(
         }
     }
 
-    fun peer(sessionId: Int): NearbyPeer? = peers[sessionId]
+    fun peer(sessionId: Int): BleSighting? = peers[sessionId]
 
     private fun handle(result: ScanResult) {
         val record = result.scanRecord ?: return
@@ -120,8 +121,8 @@ class BleScanner(
         val previous = peers[payload.sessionId]
         val name = AdvertPayload.decodeName(record.getServiceData(ParcelUuid(BlueCallUuids.NAME)))
             ?: previous?.name
-            ?: "Phone ${Integer.toHexString(payload.sessionId).takeLast(4).uppercase()}"
-        val peer = NearbyPeer(
+            ?: PeerDirectory.placeholderName(payload.sessionId)
+        val peer = BleSighting(
             sessionId = payload.sessionId,
             name = name,
             psm = payload.psm,
@@ -131,7 +132,7 @@ class BleScanner(
         )
         peers[payload.sessionId] = peer
         // Only republish when something the UI shows has changed.
-        if (previous == null || previous.name != peer.name || previous.signalBars != peer.signalBars ||
+        if (previous == null || previous.name != peer.name || PeerDirectory.signalBars(previous.rssi) != PeerDirectory.signalBars(peer.rssi) ||
             previous.psm != peer.psm
         ) {
             publish()

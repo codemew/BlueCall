@@ -1,9 +1,8 @@
 package com.codemew.bluecall.service
 
 import com.codemew.bluecall.audio.AudioRoute
-import com.codemew.bluecall.audio.RouteType
-import com.codemew.bluecall.bluetooth.NearbyPeer
 import com.codemew.bluecall.call.CallState
+import com.codemew.bluecall.call.NearbyPeer
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -11,11 +10,39 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 
+/** Whether one radio can carry BlueCall calls right now, and if not, why. */
+enum class RadioStatus {
+    /** Working: this phone is reachable over it. */
+    ON,
+
+    /** The radio is switched off (Bluetooth or Wi-Fi). */
+    OFF,
+
+    /** Android 12 only: Wi-Fi calling needs Location turned on. */
+    NEEDS_LOCATION,
+
+    /** The radio is on but can't be used just now (for example a hotspot is on, or the phone is in deep sleep). */
+    UNAVAILABLE,
+
+    /** BlueCall doesn't have the permission it needs. */
+    NO_PERMISSION,
+
+    /** Turned off in BlueCall's settings. */
+    DISABLED,
+
+    /** This phone doesn't have it. */
+    UNSUPPORTED,
+}
+
 data class PresenceState(
     val online: Boolean = false,
     val name: String = "",
+    /** Visible over Bluetooth. */
     val advertising: Boolean = false,
+    /** Looking for phones (Bluetooth scan and/or Wi-Fi discovery). */
     val scanning: Boolean = false,
+    val bluetooth: RadioStatus = RadioStatus.OFF,
+    val wifi: RadioStatus = RadioStatus.UNSUPPORTED,
     val error: String? = null,
 )
 
@@ -26,8 +53,10 @@ data class CallUiState(
     val onHold: Boolean = false,
     val peerMuted: Boolean = false,
     val peerOnHold: Boolean = false,
-    val route: RouteType? = null,
+    val route: AudioRoute? = null,
     val routes: List<AudioRoute> = emptyList(),
+    /** Android's calling system put the call on hold (for example for a SIM call); it can be resumed. */
+    val canResume: Boolean = false,
     val rttMs: Long? = null,
     val latencyMs: Int? = null,
     val linkQuality: LinkQuality = LinkQuality.UNKNOWN,

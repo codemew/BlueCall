@@ -100,6 +100,8 @@ class SettingsActions(
     val onCustomHue: (Float) -> Unit,
     val onGlassStyle: (GlassStyle) -> Unit,
     val onAnimatedBackgrounds: (Boolean) -> Unit,
+    val onWifiCalling: (Boolean) -> Unit,
+    val onSystemCalling: (Boolean) -> Unit,
 )
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -110,6 +112,8 @@ fun SettingsScreen(
     availability: EffectAvailability,
     batteryUnrestricted: Boolean,
     isSamsung: Boolean,
+    wifiCallingSupported: Boolean,
+    systemCallingSupported: Boolean,
     versionText: String,
     actions: SettingsActions,
 ) {
@@ -158,6 +162,34 @@ fun SettingsScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 NoiseToggles(settings.noise, availability, actions.onNoise)
+            }
+
+            GlassCard {
+                CardTitle("Calls")
+                ToggleRow(
+                    title = "Wi-Fi calling",
+                    subtitle = if (wifiCallingSupported) {
+                        "Call nearby phones over direct Wi-Fi (Wi-Fi Aware) as well as Bluetooth. No router needed. " +
+                            "Uses a little more battery while BlueCall is open."
+                    } else {
+                        "This phone doesn't support Wi-Fi Aware, so calls use Bluetooth."
+                    },
+                    checked = settings.wifiCalling,
+                    enabled = wifiCallingSupported,
+                    onChange = actions.onWifiCalling,
+                )
+                ToggleRow(
+                    title = "Use system calling",
+                    subtitle = if (systemCallingSupported) {
+                        "Calls show up like phone calls, so earphones, car kits and watches can answer, hang up and " +
+                            "take the audio as soon as they connect. Applies from the next call."
+                    } else {
+                        "This phone doesn't have Android's calling system; BlueCall routes audio itself."
+                    },
+                    checked = settings.systemCalling,
+                    enabled = systemCallingSupported,
+                    onChange = actions.onSystemCalling,
+                )
             }
 
             GlassCard {

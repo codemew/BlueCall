@@ -12,8 +12,14 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.ServiceInfo
+import android.location.LocationManager
 import android.media.AudioManager
 import android.media.ToneGenerator
+import android.net.wifi.WifiManager
+import android.net.wifi.aware.PeerHandle
+import android.net.wifi.aware.SubscribeDiscoverySession
+import android.net.wifi.aware.WifiAwareManager
+import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
@@ -23,29 +29,44 @@ import android.util.Log
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import com.codemew.bluecall.audio.AudioEngine
+import com.codemew.bluecall.audio.AudioRoute
 import com.codemew.bluecall.audio.AudioRouter
 import com.codemew.bluecall.audio.RouteType
 import com.codemew.bluecall.bluetooth.AdvertPayload
 import com.codemew.bluecall.bluetooth.BleAdvertiser
 import com.codemew.bluecall.bluetooth.BleScanner
+import com.codemew.bluecall.bluetooth.BleSighting
+import com.codemew.bluecall.bluetooth.BluetoothLink
 import com.codemew.bluecall.bluetooth.L2capConnector
 import com.codemew.bluecall.bluetooth.L2capServer
 import com.codemew.bluecall.bluetooth.LinkTuner
-import com.codemew.bluecall.bluetooth.NearbyPeer
 import com.codemew.bluecall.call.CallEffect
 import com.codemew.bluecall.call.CallEvent
 import com.codemew.bluecall.call.CallState
 import com.codemew.bluecall.call.CallStateMachine
+import com.codemew.bluecall.call.NearbyPeer
+import com.codemew.bluecall.call.PeerDirectory
 import com.codemew.bluecall.call.PeerInfo
+import com.codemew.bluecall.call.Transport
 import com.codemew.bluecall.call.isCallInProgress
 import com.codemew.bluecall.call.peer
 import com.codemew.bluecall.call.withPeer
 import com.codemew.bluecall.data.AppSettings
 import com.codemew.bluecall.data.SettingsRepository
 import com.codemew.bluecall.power.PowerPolicy
+import com.codemew.bluecall.protocol.CallLink
 import com.codemew.bluecall.protocol.CallSession
 import com.codemew.bluecall.protocol.Message
 import com.codemew.bluecall.protocol.PROTOCOL_VERSION
+import com.codemew.bluecall.telecom.SystemCall
+import com.codemew.bluecall.wifi.AwareConnector
+import com.codemew.bluecall.wifi.AwarePayload
+import com.codemew.bluecall.wifi.AwarePresence
+import com.codemew.bluecall.wifi.AwareResponder
+import com.codemew.bluecall.wifi.AwareSighting
+import com.codemew.bluecall.wifi.AwareSupport
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -54,14 +75,15 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.IOException
 import kotlin.random.Random
 
 /**
  * BlueCall's only long-running component. It exists exactly while BlueCall is
- * online (open, or in a call) and owns everything that uses power:
- * advertising, scanning, the L2CAP server, the call session, audio and
- * wakelocks.
+ * online (open, or in a call) and owns everything that uses power: Bluetooth
+ * advertising, scanning and the L2CAP server; Wi-Fi Aware publishing,
+ * discovery and data links; the call session, audio and wakelocks.
  *
  * [shutdown] is the single exit path. It stops every one of those, unregisters
  * receivers, cancels the alarm and stops the service; on Exit it also ends the
@@ -73,7 +95,10 @@ class BlueCallService : Service() {
 
     private enum class ShutdownReason { USER, TASK_REMOVED, IDLE, BLUETOOTH_OFF, ERROR, SYSTEM }
 
-    private class PendingIncoming(val device: BluetoothDevice) {
+    /** Which end of a Wi-Fi Aware data link this phone is, while a Wi-Fi call is set up or running. */
+    private enum class WifiRole { CALLER, CALLEE }
+
+    private class PendingIncoming(val link: CallLink) {
         var hello: Message.Hello? = null
     }
 
@@ -85,34 +110,50 @@ class BlueCallService : Service() {
     private lateinit var power: PowerPolicy
     private lateinit var audioRouter: AudioRouter
     private lateinit var linkTuner: LinkTuner
+    private lateinit var systemCall: SystemCall
 
     private var settings = AppSettings()
+    private val sessionId = Random.nextInt()
+    private var state: CallState = CallState.Offline
+
+    // Bluetooth
     private var adapter: BluetoothAdapter? = null
     private var advertiser: BleAdvertiser? = null
     private var scanner: BleScanner? = null
     private var server: L2capServer? = null
     private var psm = 0
-    private val sessionId = Random.nextInt()
+    private var bleSightings: List<BleSighting> = emptyList()
+    private var dialBle: BleSighting? = null
 
-    private var state: CallState = CallState.Offline
+    @Volatile
+    private var dialSocket: BluetoothSocket? = null
 
+    // Wi-Fi Aware
+    private var aware: AwarePresence? = null
+    private var awareSightings: List<AwareSighting> = emptyList()
+    private var dialAware: AwareSighting? = null
+    private var wifiRole: WifiRole? = null
+    private var responder: AwareResponder? = null
+    private var dialNonce = 0
+    private var dialReply: CompletableDeferred<AwarePayload.Signal>? = null
+
+    // Call
     @Volatile
     private var callSession: CallSession? = null
 
     @Volatile
     private var audioEngine: AudioEngine? = null
 
-    @Volatile
-    private var dialSocket: BluetoothSocket? = null
-
     private val pending = HashMap<CallSession, PendingIncoming>()
-    private var dialTarget: NearbyPeer? = null
     private var dialJob: Job? = null
     private var callId = 0
     private var callFrameMs = 20
     private var peerFrameMs = 20
     private var peerDevice: BluetoothDevice? = null
     private var ringback: ToneGenerator? = null
+    private var heldBySystem = false
+
+    // Lifecycle
     private var micForeground = false
     private var shuttingDown = false
     private var exitRequested = false
@@ -143,7 +184,11 @@ class BlueCallService : Service() {
                 refreshNotification()
             },
         )
-        if (!startInForeground(notifications.online(currentName()), microphone = false)) {
+        systemCall = SystemCall(this, systemCallListener)
+        // Started from a visible activity, so the microphone type can be held for the whole
+        // session: a call answered later from earphones or a car, with BlueCall in the
+        // background, can then still use the microphone. It records only during calls.
+        if (!startInForeground(notifications.online(currentName()), microphone = true)) {
             shutdown(exitApp = false, reason = ShutdownReason.ERROR)
             return
         }
@@ -180,14 +225,20 @@ class BlueCallService : Service() {
     // Public controls (UI and notification buttons)
     // ---------------------------------------------------------------------------------------------
 
-    fun dial(peer: NearbyPeer) {
+    fun dial(peer: NearbyPeer, transport: Transport) {
         if (state !is CallState.Idle) return
-        dialTarget = peer
+        when (transport) {
+            Transport.BLUETOOTH -> dialBle = scanner?.peer(peer.sessionId)
+            Transport.WIFI -> {
+                dialAware = aware?.peer(peer.sessionId)
+                wifiRole = WifiRole.CALLER
+            }
+        }
         promoteMicrophone()
-        dispatch(CallEvent.Dial(peer.toPeerInfo()))
+        dispatch(CallEvent.Dial(peer.toPeerInfo(transport)))
     }
 
-    /** Called from the visible call screen, so the microphone may be started. */
+    /** Called from the visible call screen or Android's calling system, so the microphone may be started. */
     fun answer() {
         if (state !is CallState.Incoming) return
         promoteMicrophone()
@@ -204,26 +255,30 @@ class BlueCallService : Service() {
 
     fun toggleMute() {
         if (state !is CallState.Active) return
-        val muted = !BlueCall.callUi.value.muted
-        BlueCall.callUiFlow.update { it.copy(muted = muted) }
-        audioEngine?.muted = muted
-        callSession?.send(Message.MuteState(muted))
-        refreshNotification()
+        setMuted(!BlueCall.callUi.value.muted)
     }
 
     fun toggleSpeaker() {
         if (state is CallState.Active || state is CallState.Ringing) audioRouter.toggleSpeaker()
     }
 
-    fun selectRoute(type: RouteType) {
-        if (state is CallState.Active || state is CallState.Ringing) audioRouter.select(type)
+    fun selectRoute(route: AudioRoute) {
+        if (state is CallState.Active || state is CallState.Ringing) audioRouter.select(route)
+    }
+
+    /** Takes the call off hold after Android's calling system held it (for example for a SIM call). */
+    fun resume() {
+        if (state is CallState.Active && heldBySystem) systemCall.resume()
     }
 
     fun exit() = shutdown(exitApp = true, reason = ShutdownReason.USER)
 
+    /** Re-checks both radios, for example after a permission was granted in system settings. */
+    fun refreshRadios() = updatePresence()
+
     fun onUiVisibilityChanged(visible: Boolean) {
         if (state == CallState.Offline || shuttingDown) return
-        if (!visible) lastActivityElapsed = SystemClock.elapsedRealtime()
+        if (!visible) lastActivityElapsed = SystemClock.elapsedRealtime() else aware?.clearBackoff()
         updatePresence()
         updateIdleCheck()
     }
@@ -242,31 +297,43 @@ class BlueCallService : Service() {
             fail("BlueCall needs the Nearby devices and Microphone permissions")
             return
         }
-        val bt = getSystemService(BluetoothManager::class.java)?.adapter
-        if (bt == null || !bt.isEnabled) {
-            fail("Bluetooth is off")
+        adapter = getSystemService(BluetoothManager::class.java)?.adapter
+        if (AwareSupport.isSupported(this)) aware = AwarePresence(this, sessionId, awareListener)
+        val bluetoothOn = adapter?.isEnabled == true
+        if (!bluetoothOn && wifiStatus() != RadioStatus.ON) {
+            fail(if (wifiConfigured()) "Bluetooth and Wi-Fi are off" else "Bluetooth is off")
             return
         }
-        adapter = bt
+        if (bluetoothOn && !startBluetooth() && wifiStatus() != RadioStatus.ON) return
+        registerReceivers()
+        lastActivityElapsed = SystemClock.elapsedRealtime()
+        BlueCall.presenceFlow.value = PresenceState(online = true, name = currentName())
+        dispatch(CallEvent.WentOnline)
+    }
+
+    /** Starts the Bluetooth side. False (with the reason shown) if it couldn't start. */
+    private fun startBluetooth(): Boolean {
+        val bt = adapter ?: return false
+        if (server != null) return true
         val srv = L2capServer(
             bt,
             onAccepted = { socket ->
                 // Runs on the accept thread: stay awake just long enough to read the call request.
                 power.acquireBriefly(HANDSHAKE_TIMEOUT_MS + 2_000)
-                main.post { onIncomingSocket(socket) }
+                main.post { onIncomingBluetooth(socket) }
             },
-            onFailed = { main.post { fail("Bluetooth stopped listening for calls") } },
+            onFailed = { main.post { onBluetoothFailed("Bluetooth stopped listening for calls") } },
         )
         psm = try {
             srv.start()
         } catch (e: IOException) {
             Log.e(TAG, "L2CAP listen failed", e)
-            fail("Couldn't start Bluetooth calling on this phone")
-            return
+            onBluetoothFailed("Couldn't start Bluetooth calling on this phone")
+            return false
         } catch (e: SecurityException) {
             Log.e(TAG, "L2CAP listen not permitted", e)
-            fail("BlueCall needs the Nearby devices permission")
-            return
+            onBluetoothFailed("BlueCall needs the Nearby devices permission")
+            return false
         }
         server = srv
         advertiser = BleAdvertiser(bt) { code ->
@@ -275,13 +342,37 @@ class BlueCallService : Service() {
         scanner = BleScanner(
             bt,
             sessionId,
-            onPeersChanged = { BlueCall.peersFlow.value = it },
+            onPeersChanged = {
+                bleSightings = it
+                publishPeers()
+            },
             onFailure = { code -> BlueCall.presenceFlow.update { it.copy(error = "Couldn't search for phones ($code)") } },
         )
-        registerReceivers()
-        lastActivityElapsed = SystemClock.elapsedRealtime()
-        BlueCall.presenceFlow.value = PresenceState(online = true, name = currentName())
-        dispatch(CallEvent.WentOnline)
+        return true
+    }
+
+    private fun stopBluetooth() {
+        advertiser?.stop()
+        scanner?.stop()
+        server?.stop()
+        advertiser = null
+        scanner = null
+        server = null
+        if (bleSightings.isNotEmpty()) {
+            bleSightings = emptyList()
+            publishPeers()
+        }
+    }
+
+    /** Bluetooth can't be used. Carry on over Wi-Fi if that's possible, otherwise go offline. */
+    private fun onBluetoothFailed(message: String) {
+        stopBluetooth()
+        if (state == CallState.Offline && wifiStatus() != RadioStatus.ON || state != CallState.Offline && !wifiConfigured()) {
+            fail(message)
+        } else {
+            BlueCall.presenceFlow.update { it.copy(error = message) }
+            updatePresence()
+        }
     }
 
     private fun fail(message: String) {
@@ -308,6 +399,7 @@ class BlueCallService : Service() {
         audioEngine = null
         stopRingback()
         audioRouter.end()
+        systemCall.end(null)
         linkTuner.release()
         callSession?.flushAndClose()
         callSession = null
@@ -384,11 +476,16 @@ class BlueCallService : Service() {
             CallEffect.ReleaseCallLocks -> {
                 power.releaseCallLock()
                 power.releaseBrief()
-                if (micForeground && !shuttingDown) startInForeground(notifications.online(currentName()), microphone = false)
             }
 
             is CallEffect.PostMissedCall -> notifications.showMissed(effect.peer)
             CallEffect.StopService -> Unit // shutdown() does this after the effects have run
+            is CallEffect.AddSystemCall -> addSystemCall(effect.incoming)
+            CallEffect.SetSystemCallActive -> systemCall.setActive()
+            is CallEffect.EndSystemCall -> {
+                systemCall.end(effect.reason)
+                heldBySystem = false
+            }
         }
     }
 
@@ -397,26 +494,34 @@ class BlueCallService : Service() {
             lastActivityElapsed = SystemClock.elapsedRealtime()
             BlueCall.callUiFlow.value = CallUiState()
             audioRestarts = 0
-            dialTarget = null
+            dialBle = null
+            dialAware = null
+            dialReply = null
+            wifiRole = null
             peerDevice = null
+            heldBySystem = false
+            updatePresence()
         }
         refreshNotification()
         updateIdleCheck()
     }
 
     // ---------------------------------------------------------------------------------------------
-    // Presence: advertising, scanning, listening
+    // Presence: advertising, scanning, listening, on both radios
     // ---------------------------------------------------------------------------------------------
 
     /**
-     * Idle + on screen: advertise (balanced) and scan.
-     * Idle + background/locked: advertise at low power only; no scanning.
-     * Calling: neither.
+     * Idle + on screen: Bluetooth advertising (balanced) and scanning; Wi-Fi Aware
+     * publishing and passive discovery.
+     * Idle + background/locked: low-power Bluetooth advertising and Wi-Fi Aware
+     * publishing only; no scanning or discovery.
+     * Calling: nothing, except the one Wi-Fi Aware session a Wi-Fi call runs over.
      */
     private fun updatePresence() {
         if (state == CallState.Offline || shuttingDown) return
         val idle = state is CallState.Idle
         val visible = BlueCall.uiVisible
+
         val adv = advertiser
         if (idle && server != null) {
             adv?.start(AdvertPayload.of(psm, sessionId), currentName(), lowPower = !visible)
@@ -424,22 +529,74 @@ class BlueCallService : Service() {
             adv?.stop()
         }
         if (idle && visible) scanner?.start() else scanner?.stop()
+
+        val wifi = wifiStatus()
+        aware?.let { a ->
+            if (wifi == RadioStatus.ON) {
+                val role = wifiRole
+                a.update(
+                    publish = idle || role == WifiRole.CALLEE,
+                    subscribe = (idle && visible) || role == WifiRole.CALLER,
+                    displayName = currentName(),
+                    inCall = role != null,
+                )
+            } else {
+                a.stop()
+                responder?.cancel()
+                responder = null
+            }
+        }
+
         BlueCall.presenceFlow.update {
             it.copy(
                 online = true,
                 name = currentName(),
                 advertising = adv?.isAdvertising == true,
-                scanning = idle && visible,
+                scanning = idle && visible && (scanner != null || wifi == RadioStatus.ON),
+                bluetooth = bluetoothStatus(),
+                wifi = wifi,
             )
         }
     }
 
     private fun stopPresence() {
-        advertiser?.stop()
-        scanner?.stop()
-        server?.stop()
-        server = null
+        stopBluetooth()
+        aware?.stop()
+        responder?.cancel()
+        responder = null
+        bleSightings = emptyList()
+        awareSightings = emptyList()
         BlueCall.peersFlow.value = emptyList()
+    }
+
+    private fun publishPeers() {
+        BlueCall.peersFlow.value = PeerDirectory.merge(
+            sessionId,
+            bleSightings.map { it.toSighting() },
+            awareSightings.map { it.toSighting() },
+        )
+    }
+
+    private fun bluetoothStatus(): RadioStatus = when {
+        adapter == null -> RadioStatus.UNSUPPORTED
+        adapter?.isEnabled != true -> RadioStatus.OFF
+        server == null -> RadioStatus.UNAVAILABLE
+        else -> RadioStatus.ON
+    }
+
+    /** Wi-Fi calling is possible on this phone in principle (it may still be off or paused right now). */
+    private fun wifiConfigured(): Boolean =
+        settings.wifiCalling && AwareSupport.isSupported(this) && AwareSupport.hasPermission(this)
+
+    private fun wifiStatus(): RadioStatus = when {
+        !AwareSupport.isSupported(this) -> RadioStatus.UNSUPPORTED
+        !settings.wifiCalling -> RadioStatus.DISABLED
+        !AwareSupport.hasPermission(this) -> RadioStatus.NO_PERMISSION
+        getSystemService(WifiManager::class.java)?.isWifiEnabled != true -> RadioStatus.OFF
+        Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU &&
+            getSystemService(LocationManager::class.java)?.isLocationEnabled != true -> RadioStatus.NEEDS_LOCATION
+        !AwareSupport.isAvailable(this) -> RadioStatus.UNAVAILABLE
+        else -> RadioStatus.ON
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -447,62 +604,149 @@ class BlueCallService : Service() {
     // ---------------------------------------------------------------------------------------------
 
     private fun startDial(peer: PeerInfo) {
-        val target = scanner?.peer(peer.sessionId) ?: dialTarget?.takeIf { it.sessionId == peer.sessionId }
+        callFrameMs = settings.frameMs
+        callId = Random.nextInt()
+        when (peer.transport) {
+            Transport.BLUETOOTH -> dialBluetooth(peer)
+            Transport.WIFI -> dialWifi(peer)
+        }
+    }
+
+    private fun dialBluetooth(peer: PeerInfo) {
+        val target = scanner?.peer(peer.sessionId) ?: dialBle?.takeIf { it.sessionId == peer.sessionId }
         if (target == null) {
             main.post { dispatch(CallEvent.DialFailed) }
             return
         }
-        callFrameMs = settings.frameMs
-        callId = Random.nextInt()
         peerDevice = target.device
         dialJob = scope.launch {
             val result = withContext(Dispatchers.IO) {
-                runCatching { L2capConnector.connect(target.device, target.psm) { dialSocket = it } }
+                runCatching { BluetoothLink(L2capConnector.connect(target.device, target.psm) { dialSocket = it }) }
             }
             dialSocket = null
-            val socket = result.getOrNull()
-            val current = state
-            if (current !is CallState.Dialing || current.peer.sessionId != peer.sessionId) {
-                socket?.let { runCatching { it.close() } }
-                return@launch
-            }
-            if (socket == null) {
-                Log.w(TAG, "dial failed", result.exceptionOrNull())
-                dispatch(CallEvent.DialFailed)
-                return@launch
-            }
-            val session = try {
-                CallSession(socket.inputStream, socket.outputStream, socket, sessionListener)
-            } catch (e: IOException) {
-                runCatching { socket.close() }
-                dispatch(CallEvent.DialFailed)
-                return@launch
-            }
-            callSession = session
-            session.start()
-            dispatch(CallEvent.DialConnected)
+            onDialResult(peer, result.getOrNull(), result.exceptionOrNull())
         }
     }
 
-    private fun onIncomingSocket(socket: BluetoothSocket) {
-        if (state == CallState.Offline || shuttingDown) {
-            runCatching { socket.close() }
-            power.releaseBrief()
+    private fun dialWifi(peer: PeerInfo) {
+        val target = aware?.peer(peer.sessionId) ?: dialAware?.takeIf { it.sessionId == peer.sessionId }
+        if (target == null || aware?.subscriber == null) {
+            main.post { dispatch(CallEvent.DialFailed) }
             return
         }
-        val session = try {
-            CallSession(socket.inputStream, socket.outputStream, socket, sessionListener)
+        val passphrase = AwarePayload.newPassphrase()
+        val nonce = Random.nextInt()
+        dialNonce = nonce
+        dialJob = scope.launch {
+            var busy = false
+            var error: Throwable? = null
+            val link = withTimeoutOrNull(WIFI_DIAL_TIMEOUT_MS) {
+                when (askToConnect(peer.sessionId, target.peer, nonce, passphrase)) {
+                    is AwarePayload.Signal.Busy -> {
+                        busy = true
+                        null
+                    }
+
+                    is AwarePayload.Signal.Ready -> {
+                        val subscription = aware?.subscriber
+                        val handle = aware?.peer(peer.sessionId)?.peer ?: target.peer
+                        subscription?.let { connectWifi(it, handle, passphrase) { e -> error = e } }
+                    }
+
+                    else -> null
+                }
+            }
+            dialReply = null
+            if (busy) {
+                if (isDialing(peer)) dispatch(CallEvent.RemoteRejected(busy = true))
+                return@launch
+            }
+            onDialResult(peer, link, error)
+        }
+    }
+
+    private suspend fun connectWifi(
+        subscription: SubscribeDiscoverySession,
+        peer: PeerHandle,
+        passphrase: String,
+        onError: (Throwable) -> Unit,
+    ): CallLink? = try {
+        AwareConnector.connect(this, subscription, peer, passphrase)
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        onError(e)
+        null
+    }
+
+    /**
+     * Sends CONNECT (up to three times) and waits for READY or BUSY. The peer is
+     * looked up again each time: on Android 12 discovery restarts now and then,
+     * which gives the other phone a new handle.
+     */
+    private suspend fun askToConnect(
+        peerSessionId: Int,
+        fallback: PeerHandle,
+        nonce: Int,
+        passphrase: String,
+    ): AwarePayload.Signal? {
+        val reply = CompletableDeferred<AwarePayload.Signal>()
+        dialReply = reply
+        repeat(CONNECT_ATTEMPTS) {
+            val peer = aware?.peer(peerSessionId)?.peer ?: fallback
+            aware?.send(viaPublish = false, peer, AwarePayload.Signal.Connect(sessionId, nonce, passphrase))
+            withTimeoutOrNull(CONNECT_REPLY_TIMEOUT_MS) { reply.await() }?.let { return it }
+        }
+        return null
+    }
+
+    private fun isDialing(peer: PeerInfo): Boolean {
+        val current = state
+        return current is CallState.Dialing && current.peer.sessionId == peer.sessionId
+    }
+
+    private fun onDialResult(peer: PeerInfo, link: CallLink?, error: Throwable?) {
+        if (!isDialing(peer)) {
+            link?.close()
+            return
+        }
+        if (link == null) {
+            Log.w(TAG, "dial over ${peer.transport} failed", error)
+            dispatch(CallEvent.DialFailed)
+            return
+        }
+        val session = CallSession(link.input, link.output, link, sessionListener)
+        callSession = session
+        session.start()
+        dispatch(CallEvent.DialConnected)
+    }
+
+    private fun onIncomingBluetooth(socket: BluetoothSocket) {
+        val link = try {
+            BluetoothLink(socket)
         } catch (e: IOException) {
             runCatching { socket.close() }
             power.releaseBrief()
             return
         }
-        pending[session] = PendingIncoming(socket.remoteDevice)
+        onIncomingLink(link)
+    }
+
+    private fun onIncomingLink(link: CallLink) {
+        if (state == CallState.Offline || shuttingDown) {
+            link.close()
+            power.releaseBrief()
+            return
+        }
+        val session = CallSession(link.input, link.output, link, sessionListener)
+        pending[session] = PendingIncoming(link)
         session.start()
         main.postDelayed({
             if (pending.remove(session) != null) {
                 closeAsync(session, flush = false)
                 power.releaseBrief()
+                if (link.transport == Transport.WIFI && state is CallState.Idle) wifiRole = null
+                updatePresence()
             }
         }, HANDSHAKE_TIMEOUT_MS)
     }
@@ -534,7 +778,8 @@ class BlueCallService : Service() {
                 is Message.CallRequest -> {
                     pending.remove(session)
                     val hello = incoming.hello
-                    val peer = PeerInfo(hello?.sessionId ?: 0, hello?.name?.ifBlank { null } ?: "Nearby phone")
+                    val transport = incoming.link.transport
+                    val peer = PeerInfo(hello?.sessionId ?: 0, hello?.name?.ifBlank { null } ?: "Nearby phone", transport)
                     if (state !is CallState.Idle) {
                         session.send(Message.CallReject(message.callId, Message.REJECT_BUSY))
                         closeAsync(session, flush = true)
@@ -545,7 +790,8 @@ class BlueCallService : Service() {
                     callId = message.callId
                     callFrameMs = settings.frameMs
                     peerFrameMs = message.frameMs.coerceIn(MIN_FRAME_MS, MAX_FRAME_MS)
-                    peerDevice = incoming.device
+                    peerDevice = (incoming.link as? BluetoothLink)?.device
+                    if (transport == Transport.WIFI) wifiRole = WifiRole.CALLEE
                     session.send(Message.Hello(PROTOCOL_VERSION, sessionId, currentName()))
                     dispatch(CallEvent.IncomingCall(peer))
                     power.releaseBrief()
@@ -594,6 +840,8 @@ class BlueCallService : Service() {
         callSession = null
         dialSocket?.let { runCatching { it.close() } }
         dialSocket = null
+        dialJob?.cancel()
+        dialJob = null
         linkTuner.release()
         if (session != null) closeAsync(session, flush = true)
     }
@@ -604,24 +852,163 @@ class BlueCallService : Service() {
     }
 
     // ---------------------------------------------------------------------------------------------
+    // Wi-Fi Aware discovery messages
+    // ---------------------------------------------------------------------------------------------
+
+    private val awareListener = object : AwarePresence.Listener {
+        override fun onPeersChanged(peers: List<AwareSighting>) {
+            awareSightings = peers
+            publishPeers()
+        }
+
+        override fun onSignal(viaPublish: Boolean, peer: PeerHandle, signal: AwarePayload.Signal) {
+            when (signal) {
+                is AwarePayload.Signal.Connect -> if (viaPublish) onConnectRequest(peer, signal)
+                is AwarePayload.Signal.Ready -> if (!viaPublish && signal.nonce == dialNonce) dialReply?.complete(signal)
+                is AwarePayload.Signal.Busy -> if (!viaPublish && signal.nonce == dialNonce) dialReply?.complete(signal)
+            }
+        }
+
+        override fun onMessageSent(messageId: Int, success: Boolean) {
+            if (!success) Log.d(TAG, "Wi-Fi Aware message $messageId not delivered")
+        }
+
+        override fun onAwareLost() {
+            awareSightings = emptyList()
+            publishPeers()
+            responder?.cancel()
+            responder = null
+            updatePresence()
+        }
+    }
+
+    /** Another phone wants to call this one over Wi-Fi. */
+    private fun onConnectRequest(peer: PeerHandle, request: AwarePayload.Signal.Connect) {
+        val a = aware ?: return
+        var existing = responder
+        if (existing != null && existing.nonce == request.nonce) {
+            // A repeated request: the READY may have been lost.
+            a.send(viaPublish = true, peer, AwarePayload.Signal.Ready(request.nonce))
+            return
+        }
+        if (existing != null && existing.callerSessionId == request.sessionId && state is CallState.Idle) {
+            // The same phone trying again after a failed attempt: drop the stale one.
+            existing.cancel()
+            responder = null
+            existing = null
+        }
+        val publication = a.publisher
+        if (state !is CallState.Idle || existing != null || publication == null || shuttingDown) {
+            a.send(viaPublish = true, peer, AwarePayload.Signal.Busy(request.nonce))
+            return
+        }
+        power.acquireBriefly(WIFI_DIAL_TIMEOUT_MS + 2_000)
+        var created: AwareResponder? = null
+        val r = AwareResponder(
+            this,
+            publication,
+            peer,
+            request.sessionId,
+            request.nonce,
+            request.passphrase,
+            onAccepted = { link ->
+                main.post {
+                    if (responder === created) responder = null
+                    onIncomingLink(link)
+                }
+            },
+            onFailed = {
+                main.post {
+                    if (responder === created) {
+                        responder = null
+                        if (state is CallState.Idle) wifiRole = null
+                        power.releaseBrief()
+                        updatePresence()
+                    }
+                }
+            },
+        )
+        created = r
+        if (!r.start()) {
+            power.releaseBrief()
+            a.send(viaPublish = true, peer, AwarePayload.Signal.Busy(request.nonce))
+            return
+        }
+        responder = r
+        wifiRole = WifiRole.CALLEE
+        a.send(viaPublish = true, peer, AwarePayload.Signal.Ready(request.nonce))
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Android's calling system
+    // ---------------------------------------------------------------------------------------------
+
+    private fun addSystemCall(incoming: Boolean) {
+        val peer = state.peer ?: return
+        val use = settings.systemCalling && SystemCall.isSupported(this)
+        audioRouter.expectSystem(use)
+        if (use) systemCall.add(peer, incoming)
+    }
+
+    private val systemCallListener = object : SystemCall.Listener {
+        override fun onSystemCallReady(ready: Boolean) {
+            if (!state.isCallInProgress) return
+            if (ready) audioRouter.onSystemReady(systemCall::requestRoute) else audioRouter.onSystemUnavailable()
+        }
+
+        override fun onSystemAnswer() = answer()
+
+        override fun onSystemDisconnect() {
+            when (state) {
+                is CallState.Incoming -> dispatch(CallEvent.Decline)
+                is CallState.Dialing, is CallState.Ringing, is CallState.Active -> dispatch(CallEvent.LocalHangup)
+                else -> Unit
+            }
+        }
+
+        override fun onSystemHold(onHold: Boolean) {
+            if (state !is CallState.Active) return
+            heldBySystem = onHold
+            onHoldChanged(onHold)
+            BlueCall.callUiFlow.update { it.copy(canResume = onHold) }
+            refreshNotification()
+        }
+
+        override fun onSystemMuted(muted: Boolean) {
+            if (state is CallState.Active && muted != BlueCall.callUi.value.muted) setMuted(muted)
+        }
+
+        override fun onSystemRoutes(current: AudioRoute?, available: List<AudioRoute>) {
+            audioRouter.onSystemRoutes(current, available)
+        }
+    }
+
+    // ---------------------------------------------------------------------------------------------
     // Audio
     // ---------------------------------------------------------------------------------------------
+
+    private fun newEngine(): AudioEngine {
+        val wifi = state.peer?.transport == Transport.WIFI
+        val ui = BlueCall.callUi.value
+        return AudioEngine(
+            frameMs = callFrameMs,
+            peerFrameMs = peerFrameMs,
+            noise = settings.noise,
+            sendPacket = { seq, data, length -> callSession?.sendAudio(seq, data, length) },
+            onError = { message -> main.post { onAudioError(message) } },
+            bitrate = if (wifi) AudioEngine.WIFI_BITRATE else AudioEngine.BITRATE,
+        ).apply {
+            muted = ui.muted
+            onHold = ui.onHold
+        }
+    }
 
     private fun startAudio() {
         if (!AppPermissions.granted(this, Manifest.permission.RECORD_AUDIO)) {
             BlueCall.callUiFlow.update { it.copy(error = "Microphone permission is off") }
         }
         audioRouter.begin()
-        val ui = BlueCall.callUi.value
-        val engine = AudioEngine(
-            frameMs = callFrameMs,
-            peerFrameMs = peerFrameMs,
-            noise = settings.noise,
-            sendPacket = { seq, data, length -> callSession?.sendAudio(seq, data, length) },
-            onError = { message -> main.post { onAudioError(message) } },
-        )
-        engine.muted = ui.muted
-        engine.onHold = ui.onHold
+        val engine = newEngine()
         audioEngine = if (engine.start(settings.noise)) engine else null
         power.acquireCallLock(MAX_CALL_MS)
         peerDevice?.let { linkTuner.tune(it) }
@@ -643,24 +1030,26 @@ class BlueCallService : Service() {
         if (audioRestarts < MAX_AUDIO_RESTARTS) {
             audioRestarts++
             audioEngine?.stop()
-            val ui = BlueCall.callUi.value
-            val engine = AudioEngine(
-                callFrameMs, peerFrameMs, settings.noise,
-                sendPacket = { seq, data, length -> callSession?.sendAudio(seq, data, length) },
-                onError = { msg -> main.post { onAudioError(msg) } },
-            )
-            engine.muted = ui.muted
-            engine.onHold = ui.onHold
+            val engine = newEngine()
             audioEngine = if (engine.start(settings.noise)) engine else null
         } else {
             BlueCall.callUiFlow.update { it.copy(error = message) }
         }
     }
 
+    private fun setMuted(muted: Boolean) {
+        BlueCall.callUiFlow.update { it.copy(muted = muted) }
+        audioEngine?.muted = muted
+        if (!muted && audioRouter.systemOwnsAudio) audioRouter.clearGlobalMicMute()
+        callSession?.send(Message.MuteState(muted))
+        refreshNotification()
+    }
+
     private fun onHoldChanged(onHold: Boolean) {
         if (state !is CallState.Active) return
+        if (BlueCall.callUi.value.onHold == onHold) return
         audioEngine?.onHold = onHold
-        BlueCall.callUiFlow.update { it.copy(onHold = onHold) }
+        BlueCall.callUiFlow.update { it.copy(onHold = onHold, canResume = onHold && heldBySystem) }
         callSession?.send(Message.HoldState(onHold))
         refreshNotification()
     }
@@ -720,8 +1109,8 @@ class BlueCallService : Service() {
         } catch (e: Exception) {
             Log.w(TAG, "startForeground(mic=$microphone) failed", e)
             if (!microphone) return false
-            // Couldn't add the microphone type (e.g. not started from the foreground):
-            // keep running as a connected-device service.
+            // Couldn't add the microphone type (e.g. the permission is off):
+            // run as a connected-device service and try again when a call starts.
             runCatching { ServiceCompat.startForeground(this, CallNotifications.ID_SERVICE, notification, connected) }
             micForeground = false
             true
@@ -740,7 +1129,7 @@ class BlueCallService : Service() {
             is CallState.Dialing -> notifications.outgoing(s.peer, ringing = false)
             is CallState.Ringing -> notifications.outgoing(s.peer, ringing = true)
             is CallState.Active -> notifications.ongoing(
-                s.peer, s.connectedAtMs, ui.muted, ui.route == RouteType.SPEAKER, ui.onHold,
+                s.peer, s.connectedAtMs, ui.muted, ui.route?.type == RouteType.SPEAKER, ui.onHold, ui.canResume,
             )
         }
     }
@@ -754,16 +1143,36 @@ class BlueCallService : Service() {
         override fun onReceive(context: Context, intent: Intent) {
             when (intent.action) {
                 BluetoothAdapter.ACTION_STATE_CHANGED -> {
-                    val s = intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR)
-                    if (s == BluetoothAdapter.STATE_TURNING_OFF || s == BluetoothAdapter.STATE_OFF) {
-                        shutdown(exitApp = false, reason = ShutdownReason.BLUETOOTH_OFF)
-                        BlueCall.presenceFlow.value = PresenceState(online = false, error = "Bluetooth was turned off")
+                    when (intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR)) {
+                        BluetoothAdapter.STATE_TURNING_OFF, BluetoothAdapter.STATE_OFF -> onBluetoothOff()
+                        BluetoothAdapter.STATE_ON -> onBluetoothOn()
                     }
                 }
 
+                WifiAwareManager.ACTION_WIFI_AWARE_STATE_CHANGED, LocationManager.MODE_CHANGED_ACTION -> {
+                    aware?.clearBackoff()
+                    updatePresence()
+                }
                 Intent.ACTION_SCREEN_ON -> checkIdle()
             }
         }
+    }
+
+    private fun onBluetoothOff() {
+        if (shuttingDown || state == CallState.Offline) return
+        stopBluetooth()
+        if (!wifiConfigured()) {
+            shutdown(exitApp = false, reason = ShutdownReason.BLUETOOTH_OFF)
+            BlueCall.presenceFlow.value = PresenceState(online = false, error = "Bluetooth was turned off")
+        } else {
+            updatePresence()
+        }
+    }
+
+    private fun onBluetoothOn() {
+        if (shuttingDown || state == CallState.Offline || server != null) return
+        if (startBluetooth()) BlueCall.presenceFlow.update { it.copy(error = null) }
+        updatePresence()
     }
 
     private fun registerReceivers() {
@@ -771,6 +1180,10 @@ class BlueCallService : Service() {
         val filter = IntentFilter().apply {
             addAction(BluetoothAdapter.ACTION_STATE_CHANGED)
             addAction(Intent.ACTION_SCREEN_ON)
+            if (aware != null) {
+                addAction(WifiAwareManager.ACTION_WIFI_AWARE_STATE_CHANGED)
+                if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) addAction(LocationManager.MODE_CHANGED_ACTION)
+            }
         }
         ContextCompat.registerReceiver(this, systemReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
         receiversRegistered = true
@@ -812,9 +1225,15 @@ class BlueCallService : Service() {
         val old = settings
         settings = new
         if (old.noise != new.noise) audioEngine?.updateNoise(new.noise)
-        if (old.displayName != new.displayName) {
+        if (old.displayName != new.displayName || old.wifiCalling != new.wifiCalling) {
+            if (old.wifiCalling != new.wifiCalling) aware?.clearBackoff()
             updatePresence()
             refreshNotification()
+        }
+        if (old.wifiCalling && !new.wifiCalling && state != CallState.Offline && server == null && !shuttingDown) {
+            // Wi-Fi calling switched off while Bluetooth is off: nothing left to be reachable on.
+            fail("Bluetooth is off")
+            return
         }
         if (old.autoOfflineMinutes != new.autoOfflineMinutes) updateIdleCheck()
     }
@@ -826,6 +1245,9 @@ class BlueCallService : Service() {
         private const val TAG = "BlueCallService"
         private const val RING_TIMEOUT_MS = 45_000L
         private const val HANDSHAKE_TIMEOUT_MS = 5_000L
+        private const val WIFI_DIAL_TIMEOUT_MS = 15_000L
+        private const val CONNECT_ATTEMPTS = 3
+        private const val CONNECT_REPLY_TIMEOUT_MS = 1_500L
         private const val MAX_CALL_MS = 4L * 60 * 60 * 1000
         private const val KILL_DELAY_MS = 400L
         private const val MAX_AUDIO_RESTARTS = 3

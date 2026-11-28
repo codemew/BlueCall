@@ -8,6 +8,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.graphics.Color as AndroidColor
+import android.net.wifi.aware.WifiAwareManager
 import android.os.Build
 import android.os.Bundle
 import android.os.Process
@@ -41,8 +42,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
 import com.codemew.bluecall.audio.EffectAvailability
 import com.codemew.bluecall.audio.NativeAudio
-import com.codemew.bluecall.bluetooth.NearbyPeer
 import com.codemew.bluecall.call.CallState
+import com.codemew.bluecall.call.NearbyPeer
 import com.codemew.bluecall.data.AppSettings
 import com.codemew.bluecall.data.SettingsRepository
 import com.codemew.bluecall.power.PowerPolicy
@@ -59,6 +60,8 @@ import com.codemew.bluecall.ui.SettingsScreen
 import com.codemew.bluecall.ui.glass.GlassBackdrop
 import com.codemew.bluecall.ui.theme.BlueCallTheme
 import com.codemew.bluecall.ui.theme.LocalBlueCallLook
+import com.codemew.bluecall.telecom.SystemCall
+import com.codemew.bluecall.wifi.AwareSupport
 import kotlinx.coroutines.launch
 
 /**
@@ -75,13 +78,16 @@ class MainActivity : ComponentActivity() {
     private val settingsRepository by lazy { SettingsRepository(applicationContext) }
 
     private var bluetoothOn by mutableStateOf(false)
+
+    /** Wi-Fi Aware calling could go online right now (supported, permitted and available). */
+    private var wifiReady = false
     private var permissionsOk by mutableStateOf(false)
     private var notificationsOk by mutableStateOf(true)
     private var fullScreenOk by mutableStateOf(true)
     private var batteryOk by mutableStateOf(false)
     private var receiverRegistered = false
 
-    /** Registered only while this screen is visible. */
+    /** Bluetooth and Wi-Fi Aware state changes. Registered only while this screen is visible. */
     private val bluetoothReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             refreshSystemState()
@@ -109,7 +115,10 @@ class MainActivity : ComponentActivity() {
         ContextCompat.registerReceiver(
             this,
             bluetoothReceiver,
-            IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED),
+            IntentFilter().apply {
+                addAction(BluetoothAdapter.ACTION_STATE_CHANGED)
+                addAction(WifiAwareManager.ACTION_WIFI_AWARE_STATE_CHANGED)
+            },
             ContextCompat.RECEIVER_NOT_EXPORTED,
         )
         receiverRegistered = true
@@ -120,6 +129,9 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         refreshSystemState()
+        // Permissions or Location may have changed in system settings.
+        BlueCall.controller?.refreshRadios()
+        maybeGoOnline()
     }
 
     override fun onStop() {
@@ -137,10 +149,11 @@ class MainActivity : ComponentActivity() {
         fullScreenOk = AppPermissions.canUseFullScreenIntent(this)
         batteryOk = PowerPolicy.isIgnoringBatteryOptimizations(this)
         bluetoothOn = getSystemService(BluetoothManager::class.java)?.adapter?.isEnabled == true
+        wifiReady = AwareSupport.isSupported(this) && AwareSupport.hasPermission(this) && AwareSupport.isAvailable(this)
     }
 
     private fun maybeGoOnline() {
-        if (permissionsOk && bluetoothOn && BlueCall.controller == null) {
+        if (permissionsOk && (bluetoothOn || wifiReady) && BlueCall.controller == null) {
             BlueCallService.start(this)
         }
     }
@@ -200,6 +213,15 @@ class MainActivity : ComponentActivity() {
             refreshSystemState()
             maybeGoOnline()
         }
+        var askedWifi by rememberSaveable { mutableStateOf(false) }
+        val wifiPermissionLauncher = rememberLauncherForActivityResult(
+            ActivityResultContracts.RequestMultiplePermissions(),
+        ) {
+            askedWifi = true
+            refreshSystemState()
+            BlueCall.controller?.refreshRadios()
+            maybeGoOnline()
+        }
 
         // An incoming call while BlueCall is on screen: show the call screen straight away.
         LaunchedEffect(callState) {
@@ -246,6 +268,15 @@ class MainActivity : ComponentActivity() {
                     callState = callState,
                     onOpenSettings = { showSettings = true },
                     onEnableBluetooth = { bluetoothLauncher.launch(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE)) },
+                    onAllowWifi = {
+                        val wanted = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                            arrayOf(AwareSupport.permission)
+                        } else {
+                            AppPermissions.wifiOnAndroid12
+                        }
+                        val blocked = askedWifi && !shouldShowRequestPermissionRationale(AwareSupport.permission)
+                        if (blocked) launch(PowerPolicy.appDetailsIntent(this@MainActivity)) else wifiPermissionLauncher.launch(wanted)
+                    },
                     onRequestNotifications = {
                         if (!askedPermissions) permissionLauncher.launch(AppPermissions.optional) else openNotificationSettings()
                     },
@@ -270,6 +301,8 @@ class MainActivity : ComponentActivity() {
             availability = availability,
             batteryUnrestricted = batteryOk,
             isSamsung = PowerPolicy.isSamsung,
+            wifiCallingSupported = remember { AwareSupport.isSupported(this) },
+            systemCallingSupported = remember { SystemCall.isSupported(this) },
             versionText = versionText,
             actions = SettingsActions(
                 onBack = onBack,
@@ -284,6 +317,8 @@ class MainActivity : ComponentActivity() {
                 onCustomHue = { hue -> save { setCustomHue(hue) } },
                 onGlassStyle = { style -> save { setGlassStyle(style) } },
                 onAnimatedBackgrounds = { on -> save { setAnimatedBackgrounds(on) } },
+                onWifiCalling = { on -> save { setWifiCalling(on) } },
+                onSystemCalling = { on -> save { setSystemCalling(on) } },
             ),
         )
     }
@@ -296,6 +331,7 @@ class MainActivity : ComponentActivity() {
         callState: CallState,
         onOpenSettings: () -> Unit,
         onEnableBluetooth: () -> Unit,
+        onAllowWifi: () -> Unit,
         onRequestNotifications: () -> Unit,
     ) {
         HomeScreen(
@@ -304,6 +340,7 @@ class MainActivity : ComponentActivity() {
                 peers = peers,
                 lastEnd = (callState as? CallState.Idle)?.lastEnd,
                 bluetoothOn = bluetoothOn,
+                wifiNeedsLocationPermission = Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU,
                 notificationsAllowed = notificationsOk,
                 fullScreenAllowed = fullScreenOk,
                 batteryUnrestricted = batteryOk,
@@ -311,16 +348,19 @@ class MainActivity : ComponentActivity() {
                 isSamsung = PowerPolicy.isSamsung,
             ),
             actions = HomeActions(
-                onCall = { peer ->
+                onCall = { peer, transport ->
                     val controller = BlueCall.controller
                     if (controller != null) {
-                        controller.dial(peer)
+                        controller.dial(peer, transport)
                         startActivity(CallActivity.intent(this, answer = false))
                     }
                 },
                 onOpenSettings = onOpenSettings,
                 onExit = ::exitApp,
                 onEnableBluetooth = onEnableBluetooth,
+                onEnableWifi = { launch(Intent(Settings.Panel.ACTION_WIFI)) },
+                onAllowWifi = onAllowWifi,
+                onLocationSettings = { launch(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS)) },
                 onAllowNotifications = onRequestNotifications,
                 onAllowFullScreen = {
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {

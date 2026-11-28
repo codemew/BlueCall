@@ -19,7 +19,7 @@ sealed interface CallEvent {
 
 /** Side effects the service carries out, in order, after a transition. */
 sealed interface CallEffect {
-    /** Open the L2CAP server and start advertising. */
+    /** Start listening for calls and make this phone visible (Bluetooth and/or Wi-Fi). */
     data object StartPresence : CallEffect
 
     /** Stop advertising/scanning while a call is being set up or is active. */
@@ -28,7 +28,7 @@ sealed interface CallEffect {
     /** Back to idle: advertise again (and scan if the UI is visible). */
     data object ResumePresence : CallEffect
 
-    /** Stop advertising, scanning and the L2CAP server. */
+    /** Stop advertising, scanning and listening on every radio. */
     data object StopPresence : CallEffect
 
     data class Connect(val peer: PeerInfo) : CallEffect
@@ -54,6 +54,18 @@ sealed interface CallEffect {
 
     data class PostMissedCall(val peer: PeerInfo) : CallEffect
     data object StopService : CallEffect
+
+    /**
+     * Register the call with Android's calling system, so earphones, car kits and
+     * watches can answer, hang up and take the audio.
+     */
+    data class AddSystemCall(val incoming: Boolean) : CallEffect
+
+    /** Tell the calling system the call is now connected. */
+    data object SetSystemCallActive : CallEffect
+
+    /** Remove the call from the calling system. Emitted exactly once for every call that ends. */
+    data class EndSystemCall(val reason: EndReason) : CallEffect
 }
 
 data class Transition(val state: CallState, val effects: List<CallEffect>)
@@ -85,6 +97,7 @@ object CallStateMachine {
                     listOf(
                         CallEffect.PausePresence,
                         CallEffect.AcquireCallLocks,
+                        CallEffect.AddSystemCall(incoming = false),
                         CallEffect.ArmRingTimeout,
                         CallEffect.Connect(event.peer),
                     ),
@@ -95,6 +108,7 @@ object CallStateMachine {
                     listOf(
                         CallEffect.PausePresence,
                         CallEffect.AcquireCallLocks,
+                        CallEffect.AddSystemCall(incoming = true),
                         CallEffect.StartIncomingRing,
                         CallEffect.ArmRingTimeout,
                     ),
@@ -110,6 +124,13 @@ object CallStateMachine {
                 )
 
                 CallEvent.DialFailed -> endCall(state.peer, EndReason.CONNECTION_FAILED, nowMs, dialingEnd())
+                // Over Wi-Fi the other phone can say it is busy before any data link exists.
+                is CallEvent.RemoteRejected -> endCall(
+                    state.peer,
+                    if (event.busy) EndReason.BUSY else EndReason.REMOTE_DECLINED,
+                    nowMs,
+                    dialingEnd(),
+                )
                 CallEvent.LocalHangup -> endCall(state.peer, EndReason.CANCELLED, nowMs, dialingEnd())
                 CallEvent.RingTimeout -> endCall(state.peer, EndReason.NO_ANSWER, nowMs, dialingEnd())
                 CallEvent.LinkLost, CallEvent.RemoteHangup ->
@@ -121,7 +142,12 @@ object CallStateMachine {
             is CallState.Ringing -> when (event) {
                 CallEvent.RemoteAccepted -> Transition(
                     CallState.Active(state.peer, nowMs),
-                    listOf(CallEffect.StopRingback, CallEffect.CancelRingTimeout, CallEffect.StartAudio),
+                    listOf(
+                        CallEffect.StopRingback,
+                        CallEffect.CancelRingTimeout,
+                        CallEffect.SetSystemCallActive,
+                        CallEffect.StartAudio,
+                    ),
                 )
 
                 is CallEvent.RemoteRejected -> endCall(
@@ -145,6 +171,7 @@ object CallStateMachine {
                         CallEffect.StopIncomingRing,
                         CallEffect.CancelRingTimeout,
                         CallEffect.SendAccept,
+                        CallEffect.SetSystemCallActive,
                         CallEffect.StartAudio,
                     ),
                 )
@@ -177,7 +204,7 @@ object CallStateMachine {
     private fun endCall(peer: PeerInfo, reason: EndReason, nowMs: Long, effects: List<CallEffect>) =
         Transition(
             CallState.Idle(CallEnd(peer, reason, nowMs)),
-            effects + listOf(CallEffect.ReleaseCallLocks, CallEffect.ResumePresence),
+            effects + listOf(CallEffect.EndSystemCall(reason), CallEffect.ReleaseCallLocks, CallEffect.ResumePresence),
         )
 
     private fun dialingEnd() = listOf(CallEffect.CancelRingTimeout, CallEffect.CloseSession)
@@ -206,9 +233,13 @@ object CallStateMachine {
     /** Everything needed to stop whatever the given state had running. */
     private fun teardown(state: CallState): List<CallEffect> = when (state) {
         CallState.Offline, is CallState.Idle -> emptyList()
-        is CallState.Dialing -> dialingEnd() + CallEffect.ReleaseCallLocks
-        is CallState.Ringing -> ringingEnd(sendHangup = true) + CallEffect.ReleaseCallLocks
-        is CallState.Incoming -> incomingEnd(reject = true) + CallEffect.ReleaseCallLocks
-        is CallState.Active -> activeEnd(sendHangup = true) + CallEffect.ReleaseCallLocks
+        is CallState.Dialing ->
+            dialingEnd() + CallEffect.EndSystemCall(EndReason.CANCELLED) + CallEffect.ReleaseCallLocks
+        is CallState.Ringing ->
+            ringingEnd(sendHangup = true) + CallEffect.EndSystemCall(EndReason.CANCELLED) + CallEffect.ReleaseCallLocks
+        is CallState.Incoming ->
+            incomingEnd(reject = true) + CallEffect.EndSystemCall(EndReason.DECLINED) + CallEffect.ReleaseCallLocks
+        is CallState.Active ->
+            activeEnd(sendHangup = true) + CallEffect.EndSystemCall(EndReason.HUNG_UP) + CallEffect.ReleaseCallLocks
     }
 }
