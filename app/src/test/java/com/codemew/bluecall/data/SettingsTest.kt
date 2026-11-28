@@ -48,6 +48,54 @@ class SettingsTest {
     }
 
     @Test
+    fun themeDefaults() {
+        val theme = emptyPreferences().toAppSettings().theme
+        assertEquals("dynamic", theme.palette)
+        assertEquals(ThemeMode.SYSTEM, theme.mode)
+        assertEquals(GlassStyle.FROSTED, theme.glass)
+        assertTrue(theme.animatedBackgrounds)
+        assertEquals(205f, theme.customHue)
+    }
+
+    @Test
+    fun unknownThemeValuesFallBack() {
+        val prefs = mutablePreferencesOf(
+            SettingsKeys.THEME_MODE to "PURPLE",
+            SettingsKeys.THEME_GLASS to "",
+            SettingsKeys.THEME_PALETTE to "",
+        )
+        val theme = prefs.toAppSettings().theme
+        assertEquals(ThemeMode.SYSTEM, theme.mode)
+        assertEquals(GlassStyle.FROSTED, theme.glass)
+        assertEquals("dynamic", theme.palette)
+    }
+
+    @Test
+    fun storedThemeIsRead() {
+        val prefs = mutablePreferencesOf(
+            SettingsKeys.THEME_MODE to "DARK",
+            SettingsKeys.THEME_GLASS to "SOLID",
+            SettingsKeys.THEME_PALETTE to "sunset",
+            SettingsKeys.THEME_ANIMATED to false,
+            SettingsKeys.THEME_CUSTOM_HUE to 42f,
+        )
+        val theme = prefs.toAppSettings().theme
+        assertEquals(ThemeMode.DARK, theme.mode)
+        assertEquals(GlassStyle.SOLID, theme.glass)
+        assertEquals("sunset", theme.palette)
+        assertFalse(theme.animatedBackgrounds)
+        assertEquals(42f, theme.customHue)
+    }
+
+    @Test
+    fun hueIsClampedAndValidated() {
+        assertEquals(360f, normalizeHue(999f))
+        assertEquals(0f, normalizeHue(-5f))
+        assertEquals(205f, normalizeHue(Float.NaN))
+        assertEquals(205f, normalizeHue(null))
+    }
+
+    @Test
     fun ultraLowLatencyUsesTenMillisecondFrames() {
         assertEquals(10, AppSettings(ultraLowLatency = true).frameMs)
     }

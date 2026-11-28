@@ -1,5 +1,12 @@
 package com.codemew.bluecall.ui
 
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -15,6 +22,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -26,6 +34,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
@@ -36,32 +45,66 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
 import com.codemew.bluecall.audio.EffectAvailability
 import com.codemew.bluecall.data.NoiseSettings
+import com.codemew.bluecall.ui.glass.GlassSurface
+import com.codemew.bluecall.ui.glass.LocalMotionAllowed
 import kotlinx.coroutines.delay
 
+/** A round glass avatar with the person's initial. */
 @Composable
-fun Avatar(name: String, size: Dp, modifier: Modifier = Modifier) {
+fun Avatar(name: String, size: Dp, modifier: Modifier = Modifier, tint: Color = Color.Unspecified) {
     val initial = name.trim().firstOrNull()?.uppercaseChar()?.toString() ?: "?"
-    Box(
-        modifier
-            .size(size)
-            .clip(CircleShape)
-            .background(MaterialTheme.colorScheme.primaryContainer),
-        contentAlignment = Alignment.Center,
-    ) {
+    GlassSurface(modifier.size(size), shape = CircleShape, tint = tint) {
         Text(
             initial,
-            color = MaterialTheme.colorScheme.onPrimaryContainer,
+            color = MaterialTheme.colorScheme.onSurface,
             fontSize = (size.value * 0.42f).sp,
             fontWeight = FontWeight.Medium,
             textAlign = TextAlign.Center,
+            modifier = Modifier.align(Alignment.Center),
         )
+    }
+}
+
+/**
+ * Soft rings expanding outwards, used while searching and while ringing.
+ * Runs only while composed and on screen (Compose pauses frames when the screen is stopped).
+ */
+@Composable
+fun PulseRings(color: Color, modifier: Modifier = Modifier, rings: Int = 3, periodMs: Int = 2400) {
+    if (LocalMotionAllowed.current) {
+        val transition = rememberInfiniteTransition(label = "pulse")
+        val progress by transition.animateFloat(
+            initialValue = 0f,
+            targetValue = 1f,
+            animationSpec = infiniteRepeatable(tween(periodMs, easing = LinearEasing), RepeatMode.Restart),
+            label = "pulseProgress",
+        )
+        Rings(color, modifier, rings) { progress }
+    } else {
+        Rings(color, modifier, rings) { 0.35f }
+    }
+}
+
+@Composable
+private fun Rings(color: Color, modifier: Modifier, rings: Int, progress: () -> Float) {
+    Canvas(modifier) {
+        val progress = progress()
+        val maxRadius = size.minDimension / 2
+        for (i in 0 until rings) {
+            val p = (progress + i.toFloat() / rings) % 1f
+            drawCircle(
+                color = color.copy(alpha = (1f - p) * 0.55f),
+                radius = maxRadius * (0.35f + 0.65f * p),
+                style = Stroke(width = (2.5f * (1f - p) + 0.5f).dp.toPx()),
+            )
+        }
     }
 }
 
 @Composable
 fun SignalBars(bars: Int, modifier: Modifier = Modifier) {
     val on = MaterialTheme.colorScheme.primary
-    val off = MaterialTheme.colorScheme.outlineVariant
+    val off = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.22f)
     Row(modifier, horizontalArrangement = Arrangement.spacedBy(2.dp), verticalAlignment = Alignment.Bottom) {
         for (i in 1..4) {
             Box(
@@ -107,7 +150,18 @@ fun formatDuration(ms: Long): String {
     return if (h > 0) "%d:%02d:%02d".format(h, m, s) else "%02d:%02d".format(m, s)
 }
 
-/** The five noise-cancellation switches, shared by Settings and the in-call sheet. */
+@Composable
+fun SectionTitle(title: String, modifier: Modifier = Modifier) {
+    Text(
+        title,
+        style = MaterialTheme.typography.titleSmall,
+        color = MaterialTheme.colorScheme.primary,
+        fontWeight = FontWeight.SemiBold,
+        modifier = modifier.padding(start = 6.dp, top = 6.dp, bottom = 2.dp),
+    )
+}
+
+/** The five noise-cancellation switches, shared by Settings and the in-call panel. */
 @Composable
 fun NoiseToggles(
     noise: NoiseSettings,
@@ -178,6 +232,14 @@ fun ToggleRow(
             )
         }
         Spacer(Modifier.width(16.dp))
-        Switch(checked = checked && enabled, onCheckedChange = onChange, enabled = enabled)
+        Switch(
+            checked = checked && enabled,
+            onCheckedChange = onChange,
+            enabled = enabled,
+            colors = SwitchDefaults.colors(
+                uncheckedTrackColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f),
+                uncheckedBorderColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.35f),
+            ),
+        )
     }
 }

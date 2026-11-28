@@ -45,6 +45,16 @@ class SettingsRepository(context: Context) {
             ?: AppSettings.DEFAULT_AUTO_OFFLINE_MINUTES
     }
 
+    suspend fun setThemePalette(id: String) = edit { it[SettingsKeys.THEME_PALETTE] = id }
+
+    suspend fun setThemeMode(mode: ThemeMode) = edit { it[SettingsKeys.THEME_MODE] = mode.name }
+
+    suspend fun setCustomHue(hue: Float) = edit { it[SettingsKeys.THEME_CUSTOM_HUE] = normalizeHue(hue) }
+
+    suspend fun setGlassStyle(style: GlassStyle) = edit { it[SettingsKeys.THEME_GLASS] = style.name }
+
+    suspend fun setAnimatedBackgrounds(enabled: Boolean) = edit { it[SettingsKeys.THEME_ANIMATED] = enabled }
+
     suspend fun setBatteryCardDismissed(dismissed: Boolean) =
         edit { it[SettingsKeys.BATTERY_CARD_DISMISSED] = dismissed }
 

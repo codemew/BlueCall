@@ -2,6 +2,7 @@ package com.codemew.bluecall.data
 
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
+import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 
@@ -14,6 +15,27 @@ data class NoiseSettings(
     val lowCutFilter: Boolean = true,
 )
 
+enum class ThemeMode { SYSTEM, LIGHT, DARK }
+
+/** How see-through the glass is. SOLID turns blur off for maximum readability. */
+enum class GlassStyle { CLEAR, FROSTED, SOLID }
+
+data class ThemeSettings(
+    /** A palette id from `ui.theme.Palettes`; unknown ids fall back to the phone's own colours. */
+    val palette: String = DEFAULT_PALETTE,
+    val mode: ThemeMode = ThemeMode.SYSTEM,
+    /** Hue (0–360) used when [palette] is the custom colour. */
+    val customHue: Float = DEFAULT_CUSTOM_HUE,
+    val glass: GlassStyle = GlassStyle.FROSTED,
+    /** Moving liquid backgrounds. They also pause in Battery Saver. */
+    val animatedBackgrounds: Boolean = true,
+) {
+    companion object {
+        const val DEFAULT_PALETTE = "dynamic"
+        const val DEFAULT_CUSTOM_HUE = 205f
+    }
+}
+
 data class AppSettings(
     /** Blank means "use the phone's own name". */
     val displayName: String = "",
@@ -21,6 +43,7 @@ data class AppSettings(
     val ultraLowLatency: Boolean = false,
     val autoOfflineMinutes: Int = DEFAULT_AUTO_OFFLINE_MINUTES,
     val batteryCardDismissed: Boolean = false,
+    val theme: ThemeSettings = ThemeSettings(),
 ) {
     /** Opus frame duration: 10 ms for lowest latency, 20 ms for the best battery/latency balance. */
     val frameMs: Int get() = if (ultraLowLatency) 10 else 20
@@ -42,6 +65,11 @@ object SettingsKeys {
     val ULTRA_LOW_LATENCY = booleanPreferencesKey("ultra_low_latency")
     val AUTO_OFFLINE_MINUTES = intPreferencesKey("auto_offline_minutes")
     val BATTERY_CARD_DISMISSED = booleanPreferencesKey("battery_card_dismissed")
+    val THEME_PALETTE = stringPreferencesKey("theme_palette")
+    val THEME_MODE = stringPreferencesKey("theme_mode")
+    val THEME_CUSTOM_HUE = floatPreferencesKey("theme_custom_hue")
+    val THEME_GLASS = stringPreferencesKey("theme_glass")
+    val THEME_ANIMATED = booleanPreferencesKey("theme_animated_backgrounds")
 }
 
 fun Preferences.toAppSettings(): AppSettings {
@@ -59,5 +87,19 @@ fun Preferences.toAppSettings(): AppSettings {
         autoOfflineMinutes = (this[SettingsKeys.AUTO_OFFLINE_MINUTES] ?: defaults.autoOfflineMinutes)
             .takeIf { it in AppSettings.AUTO_OFFLINE_CHOICES } ?: defaults.autoOfflineMinutes,
         batteryCardDismissed = this[SettingsKeys.BATTERY_CARD_DISMISSED] ?: defaults.batteryCardDismissed,
+        theme = ThemeSettings(
+            palette = this[SettingsKeys.THEME_PALETTE]?.takeIf { it.isNotBlank() } ?: ThemeSettings.DEFAULT_PALETTE,
+            mode = enumOrDefault(this[SettingsKeys.THEME_MODE], ThemeMode.SYSTEM),
+            customHue = normalizeHue(this[SettingsKeys.THEME_CUSTOM_HUE]),
+            glass = enumOrDefault(this[SettingsKeys.THEME_GLASS], GlassStyle.FROSTED),
+            animatedBackgrounds = this[SettingsKeys.THEME_ANIMATED] ?: true,
+        ),
     )
 }
+
+/** Clamps a stored hue into 0–360, falling back to the default for missing or invalid values. */
+fun normalizeHue(hue: Float?): Float =
+    if (hue == null || hue.isNaN()) ThemeSettings.DEFAULT_CUSTOM_HUE else hue.coerceIn(0f, 360f)
+
+private inline fun <reified E : Enum<E>> enumOrDefault(name: String?, default: E): E =
+    enumValues<E>().firstOrNull { it.name == name } ?: default

@@ -26,13 +26,19 @@ Built for Samsung Galaxy phones on Android 12 or newer, and works on any Android
 - **Incoming calls**: ring through your normal ringtone (respects silent mode and Do Not Disturb). The full-screen call screen opens over the lock screen.
 - **Audio output**: earpiece (screen turns off at your ear), speaker, Bluetooth headset or wired headset.
 - **Interruptions**: a regular phone call automatically puts the BlueCall call on hold.
+- **Appearance**:
+  - Frosted-glass cards and buttons with real background blur, over flowing liquid colours. The call screen flows at full speed and full resolution; Home and Settings drift slowly.
+  - Smooth spring animations for presses, screen changes, list updates and call controls. Halos pulse around the avatar while ringing.
+  - 14 colour themes: your phone's own colours, 12 presets (Ocean, Aurora, Sunset, Lavender, Rose, Forest, Mint, Citrus, Ember, Coral, Midnight, Graphite) and a custom colour from any hue.
+  - Light, dark or system mode, and Clear, Frosted or Solid glass (Solid turns blur off for maximum readability).
+  - "Animated backgrounds" can be switched off in Settings. Motion also pauses automatically in Battery Saver and when system animations are off.
 
 ## Battery behaviour
 
 | BlueCall is… | What runs |
 |---|---|
 | **Exited** (Exit button, swiped from Recents, or auto-offline) | **Nothing.** The process is ended. There's no boot receiver, no scheduled jobs or alarms, no push messages and no sticky service, so nothing can start BlueCall except you opening it. |
-| **Open, on screen** | A foreground service, Bluetooth LE advertising (balanced), and scanning with a filter the hardware applies. |
+| **Open, on screen** | A foreground service, Bluetooth LE advertising (balanced), and scanning with a filter the hardware applies. The liquid background animates at up to 60 Hz while a BlueCall screen is visible (paused in Battery Saver or if turned off). |
 | **Open, locked or in background** | Low-power advertising only (about one packet burst per second, done by the Bluetooth chip). No scanning, no wakelocks, no timers. Incoming calls still get through. |
 | **In a call** | Audio, the Bluetooth link at high priority, a partial wakelock, and the proximity screen-off lock on the earpiece. All are released when the call ends. |
 
